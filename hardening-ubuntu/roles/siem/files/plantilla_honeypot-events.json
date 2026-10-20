@@ -1,0 +1,278 @@
+{
+  "index_patterns": [
+    "honeypot-events*"
+  ],
+  "data_stream": {},
+  "priority": 500,
+  "template": {
+    "settings": {
+      "number_of_replicas": 0,
+      "index.lifecycle.name": "centinela-retencion",
+      "index.default_pipeline": "honeypot",
+      "index.mapping.total_fields.limit": 2000
+    },
+    "mappings": {
+      "dynamic": false,
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "event": {
+          "properties": {
+            "ingested": {
+              "type": "date"
+            },
+            "action": {
+              "type": "keyword"
+            },
+            "category": {
+              "type": "keyword"
+            },
+            "kind": {
+              "type": "keyword"
+            },
+            "severity": {
+              "type": "long"
+            }
+          }
+        },
+        "honeypot": {
+          "properties": {
+            "type": {
+              "type": "keyword"
+            },
+            "password": {
+              "type": "keyword"
+            },
+            "command": {
+              "type": "text",
+              "fields": {
+                "keyword": {
+                  "type": "keyword",
+                  "ignore_above": 512
+                }
+              }
+            },
+            "file_hash": {
+              "type": "keyword"
+            },
+            "trap": {
+              "type": "keyword"
+            },
+            "sensor": {
+              "type": "keyword"
+            },
+            "honeytoken": {
+              "type": "keyword"
+            }
+          }
+        },
+        "source": {
+          "properties": {
+            "ip": {
+              "type": "ip"
+            },
+            "port": {
+              "type": "long"
+            },
+            "geo": {
+              "properties": {
+                "location": {
+                  "type": "geo_point"
+                },
+                "country_name": {
+                  "type": "keyword"
+                },
+                "country_iso_code": {
+                  "type": "keyword"
+                },
+                "continent_name": {
+                  "type": "keyword"
+                },
+                "region_name": {
+                  "type": "keyword"
+                },
+                "city_name": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "as": {
+              "properties": {
+                "number": {
+                  "type": "long"
+                },
+                "organization": {
+                  "properties": {
+                    "name": {
+                      "type": "keyword"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "destination": {
+          "properties": {
+            "port": {
+              "type": "long"
+            }
+          }
+        },
+        "network": {
+          "properties": {
+            "protocol": {
+              "type": "keyword"
+            },
+            "community_id": {
+              "type": "keyword"
+            }
+          }
+        },
+        "user": {
+          "properties": {
+            "name": {
+              "type": "keyword"
+            }
+          }
+        },
+        "url": {
+          "properties": {
+            "original": {
+              "type": "keyword",
+              "ignore_above": 2048
+            },
+            "path": {
+              "type": "keyword",
+              "ignore_above": 2048
+            },
+            "domain": {
+              "type": "keyword"
+            }
+          }
+        },
+        "http": {
+          "properties": {
+            "request": {
+              "properties": {
+                "method": {
+                  "type": "keyword"
+                },
+                "body": {
+                  "properties": {
+                    "content": {
+                      "type": "text"
+                    }
+                  }
+                }
+              }
+            },
+            "response": {
+              "properties": {
+                "status_code": {
+                  "type": "long"
+                }
+              }
+            }
+          }
+        },
+        "user_agent": {
+          "properties": {
+            "original": {
+              "type": "keyword",
+              "ignore_above": 1024
+            }
+          }
+        },
+        "message": {
+          "type": "text"
+        },
+        "error": {
+          "properties": {
+            "message": {
+              "type": "text"
+            }
+          }
+        },
+        "hp": {
+          "type": "flattened",
+          "ignore_above": 2048
+        },
+        "ataque": {
+          "properties": {
+            "id": {
+              "type": "keyword"
+            },
+            "nombre": {
+              "type": "keyword"
+            },
+            "categoria": {
+              "type": "keyword"
+            },
+            "severidad": {
+              "type": "long"
+            },
+            "severidad_txt": {
+              "type": "keyword"
+            },
+            "explicacion": {
+              "type": "match_only_text"
+            },
+            "recomendacion": {
+              "type": "match_only_text"
+            },
+            "ids": {
+              "type": "keyword"
+            },
+            "nombres": {
+              "type": "keyword"
+            },
+            "categorias": {
+              "type": "keyword"
+            },
+            "cve": {
+              "type": "keyword"
+            },
+            "referencias": {
+              "type": "keyword",
+              "index": false,
+              "doc_values": false
+            },
+            "fuente": {
+              "type": "keyword"
+            },
+            "urls": {
+              "type": "keyword",
+              "ignore_above": 2048
+            }
+          }
+        },
+        "threat": {
+          "properties": {
+            "framework": {
+              "type": "keyword"
+            },
+            "tactic": {
+              "properties": {
+                "name": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "technique": {
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

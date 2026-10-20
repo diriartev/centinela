@@ -1,0 +1,62 @@
+---
+# Colector de métricas de Cloudflare (token de SOLO LECTURA)
+- name: CFmetrics | ¿Hay token de solo lectura?
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/secretos/cloudflare_readonly_token"
+  delegate_to: localhost
+  become: false
+  register: cf_ro
+
+- name: CFmetrics | Desplegar
+  when: cf_ro.stat.exists
+  block:
+    - name: CFmetrics | Directorios
+      ansible.builtin.file:
+        path: "{{ item.p }}"
+        state: directory
+        owner: "{{ item.o }}"
+        group: "{{ item.o }}"
+        mode: "{{ item.m }}"
+      loop:
+        - { p: /opt/stacks/cfmetrics, o: 0, m: "0711" }
+        - { p: /opt/stacks/cfmetrics/build, o: 0, m: "0700" }
+        - { p: /opt/stacks/cfmetrics/secrets, o: 0, m: "0711" }
+        - { p: /opt/stacks/cfmetrics/estado, o: "{{ dockremap_subid_inicio + 10003 }}", m: "0700" }
+
+    - name: CFmetrics | Token (solo lo lee el usuario del colector)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/secretos/cloudflare_readonly_token"
+        dest: /opt/stacks/cfmetrics/secrets/cf_token
+        owner: "{{ dockremap_subid_inicio + 10003 }}"
+        group: "{{ dockremap_subid_inicio + 10003 }}"
+        mode: "0400"
+      no_log: true
+      register: cf_tok
+
+    - name: CFmetrics | Código
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: /opt/stacks/cfmetrics/build/
+        mode: preserve
+      loop: [Dockerfile, app]
+      register: cf_src
+
+    - name: CFmetrics | Variables
+      ansible.builtin.copy:
+        dest: /opt/stacks/cfmetrics/.env
+        content: "ES_PASSWORD={{ es_cfmetrics_password }}\n"
+        mode: "0600"
+      no_log: true
+
+    - name: CFmetrics | compose.yml
+      ansible.builtin.template:
+        src: compose.yml.j2
+        dest: /opt/stacks/cfmetrics/compose.yml
+        mode: "0600"
+
+    - name: CFmetrics | Construir y levantar
+      community.docker.docker_compose_v2:
+        project_src: /opt/stacks/cfmetrics
+        state: present
+        build: "{{ 'always' if cf_src.changed else 'policy' }}"
+        recreate: "{{ 'always' if (cf_src.changed or cf_tok.changed) else 'auto' }}"

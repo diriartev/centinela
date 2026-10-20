@@ -1,0 +1,163 @@
+---
+- name: Docker | Quitar paquetes que chocan con Docker oficial
+  ansible.builtin.apt:
+    name: [docker.io, docker-doc, docker-compose, docker-compose-v2, podman-docker, containerd, runc]
+    state: absent
+
+- name: Docker | Directorio de llaves de apt
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Docker | Llave GPG del repo oficial
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: "0644"
+
+- name: Docker | Repositorio oficial (firmado)
+  ansible.builtin.apt_repository:
+    repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+    filename: docker
+    state: present
+
+# ── Volumen propio para /var/lib/docker ────────────────────────────
+# Si los honeypots o Elasticsearch llenan el disco, se llena ESTE volumen,
+# no la raíz del sistema. XFS con pquota permite limitar el disco de cada
+# contenedor (storage_opt size) para que un honeypot no se coma todo.
+- name: Docker | Herramientas de XFS
+  ansible.builtin.apt:
+    name: [xfsprogs, lvm2]
+    state: present
+
+- name: Docker | Volumen lógico para Docker
+  community.general.lvol:
+    vg: "{{ docker_lv_vg }}"
+    lv: docker
+    size: "{{ docker_lv_tam }}"
+    shrink: false
+
+- name: Docker | Sistema de archivos XFS
+  community.general.filesystem:
+    fstype: xfs
+    dev: "/dev/{{ docker_lv_vg }}/docker"
+
+- name: Docker | Montar /var/lib/docker (nodev, cuotas por proyecto)
+  ansible.posix.mount:
+    path: /var/lib/docker
+    src: "/dev/{{ docker_lv_vg }}/docker"
+    fstype: xfs
+    opts: defaults,nodev,pquota
+    state: mounted
+
+# El "root" de los contenedores se mapea a UIDs propios (300000+), distintos de
+# los subuids de los usuarios del sistema (100000+): ningún usuario puede crear un
+# user namespace que coincida con los archivos de los contenedores.
+- name: Docker | Rango de subuid/subgid exclusivo para dockremap
+  ansible.builtin.lineinfile:
+    path: "{{ item }}"
+    regexp: '^dockremap:'
+    line: "dockremap:{{ dockremap_subid_inicio }}:65536"
+  loop: [/etc/subuid, /etc/subgid]
+  notify: Reiniciar docker
+
+- name: Docker | Directorio de configuración
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    mode: "0755"
+
+- name: Docker | Configuración endurecida del daemon
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    content: "{{ docker_daemon | to_nice_json }}\n"
+    mode: "0644"
+  vars:
+    docker_daemon:
+      # Puertos publicados escuchan en 127.0.0.1 salvo que se diga otra IP
+      ip: "{{ docker_ip_por_defecto }}"
+      bip: "{{ docker_bip }}"
+      default-address-pools:
+        - { base: "{{ docker_pool }}", size: 24 }
+      # root DENTRO del contenedor = usuario sin privilegios (dockremap) en el
+      # host: si un atacante escapa de un honeypot, no es root del server.
+      userns-remap: default
+      icc: false                       # contenedores del bridge por defecto no se hablan
+      no-new-privileges: true          # nadie escala con setuid dentro del contenedor
+      userland-proxy: false
+      live-restore: true               # reiniciar dockerd no tumba los contenedores
+      log-driver: local                # logs comprimidos y con tope
+      log-opts: { max-size: "20m", max-file: "5" }
+      default-ulimits:
+        nofile: { Name: nofile, Hard: 65536, Soft: 65536 }
+        nproc:  { Name: nproc,  Hard: 8192,  Soft: 4096 }
+      experimental: false
+      log-level: info
+  notify: Reiniciar docker
+
+- name: Docker | Instalar Docker Engine + Compose
+  ansible.builtin.apt:
+    name: [docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin, docker-compose-plugin]
+    state: present
+    update_cache: true
+  register: apt_d
+  retries: 3
+  delay: 10
+  until: apt_d is succeeded
+
+- name: Docker | Servicio habilitado
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+
+# El grupo docker equivale a root: nadie entra en él. Se usa "sudo docker".
+- name: Docker | El admin NO va en el grupo docker
+  ansible.builtin.command: gpasswd -d {{ admin_usuario }} docker
+  register: gdel
+  changed_when: gdel.rc == 0
+  failed_when: false
+
+- name: Docker | Socket solo para root y el grupo docker
+  ansible.builtin.file:
+    path: /var/run/docker.sock
+    mode: "0660"
+    owner: root
+    group: docker
+
+- name: Docker | Directorio de stacks (/opt/stacks)
+  ansible.builtin.file:
+    path: /opt/stacks
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+# Aplicar YA el reinicio de Docker si cambió daemon.json: los stacks que
+# vienen después (Portainer) deben nacer con la configuración nueva.
+- name: Docker | Aplicar cambios del daemon antes de levantar stacks
+  ansible.builtin.meta: flush_handlers
+
+# ── Redes del proyecto ─────────────────────────────────────────────
+- name: Docker | Red edge (única con salida, solo para cloudflared)
+  community.docker.docker_network:
+    name: "{{ red_edge.nombre }}"
+    driver: bridge
+    ipam_config: [{ subnet: "{{ red_edge.subred }}", gateway: "{{ red_edge.gateway }}" }]
+    driver_options:
+      com.docker.network.bridge.name: "{{ red_edge.puente }}"
+      com.docker.network.bridge.enable_icc: "false"
+
+- name: Docker | Redes internas admin/data/honey/dmz (sin salida a internet)
+  community.docker.docker_network:
+    name: "{{ item.nombre }}"
+    driver: bridge
+    internal: true
+    ipam_config: [{ subnet: "{{ item.subred }}", gateway: "{{ item.gateway }}" }]
+    driver_options:
+      com.docker.network.bridge.name: "{{ item.puente }}"
+      com.docker.network.bridge.enable_icc: "{{ 'false' if item.nombre == 'honey' else 'true' }}"
+  loop: "{{ redes_internas }}"
+  loop_control:
+    label: "{{ item.nombre }} {{ item.subred }}"

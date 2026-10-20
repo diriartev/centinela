@@ -1,0 +1,13 @@
+---
+# 1) valida la configuración COMPLETA; si falla, el play se detiene y sshd
+#    sigue con la config anterior (no nos quedamos fuera). 2) recarga.
+- name: Validar configuración completa de sshd
+  ansible.builtin.command: /usr/sbin/sshd -t
+  changed_when: false
+  listen: Recargar sshd
+
+- name: Recargar servicio ssh
+  ansible.builtin.systemd:
+    name: ssh
+    state: reloaded
+  listen: Recargar sshd

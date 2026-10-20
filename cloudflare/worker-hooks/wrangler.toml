@@ -1,0 +1,33 @@
+# Centinela · relay de alertas + bot de Telegram
+# Antes: cambia "example.com" por tu dominio (routes y vars).
+# Publicar: source ../../config.env && CLOUDFLARE_ACCOUNT_ID=$CF_ACCOUNT_ID \
+#   CLOUDFLARE_API_TOKEN=$(cat ../../hardening-ubuntu/secretos/cloudflare_token) npx -y wrangler@4 deploy
+# Configurar el bot (token, chat, claves): ../../scripts/configurar-bot-telegram.sh
+name = "centinela-hooks"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = false
+preview_urls = false
+
+[vars]
+DOMINIO = "example.com"   # el worker nunca descarga muestras desde tu propio dominio
+
+[[routes]]
+pattern = "hooks.example.com"
+custom_domain = true
+
+# Estado (resumen, silencio, anti-repetición, muestras): Durable Object con SQLite (plan gratis)
+[[durable_objects.bindings]]
+name = "ESTADO"
+class_name = "Estado"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Estado"]
+
+# Vigilancia "hombre muerto": cada 10 min revisa que el servidor siga reportando
+[triggers]
+crons = ["*/10 * * * *"]
+
+[observability]
+enabled = true

@@ -1,0 +1,50 @@
+---
+- name: Portainer | Directorios
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop: [/opt/stacks/portainer, /opt/stacks/portainer/secrets, /opt/stacks/portainer/data]
+
+# Contraseña fijada desde el primer arranque: sin ella, cualquiera que
+# llegue al puerto en los primeros 5 minutos podría crear el admin.
+- name: Portainer | Contraseña del admin (secreto de Docker)
+  ansible.builtin.copy:
+    dest: /opt/stacks/portainer/secrets/admin_password
+    content: "{{ portainer_admin_password }}"
+    owner: root
+    group: root
+    mode: "0400"
+  no_log: true
+
+- name: Portainer | compose.yml
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: /opt/stacks/portainer/compose.yml
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Portainer | Levantar
+  community.docker.docker_compose_v2:
+    project_src: /opt/stacks/portainer
+    state: present
+    pull: missing
+    wait: true
+    wait_timeout: 120
+
+- name: Portainer | Tema oscuro para el admin
+  ansible.builtin.shell: |
+    set -euo pipefail
+    U=https://{{ ip_portainer }}:9443/api
+    for i in $(seq 1 20); do curl -skf $U/system/status >/dev/null && break; sleep 3; done
+    J=$(jq -n --rawfile p /opt/stacks/portainer/secrets/admin_password '{username:"admin",password:$p}' | curl -sk $U/auth -d @- | jq -r .jwt)
+    curl -skf -X PUT $U/users/1 -H "Authorization: Bearer $J" -d '{"theme":{"color":"dark"}}' | jq -r .ThemeSettings.color
+  args:
+    executable: /bin/bash
+  register: tema
+  changed_when: false
+  failed_when: tema.rc != 0
+  no_log: true

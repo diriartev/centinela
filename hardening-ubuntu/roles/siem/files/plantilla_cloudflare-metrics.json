@@ -1,0 +1,14 @@
+{
+  "index_patterns": ["cloudflare-metrics*"],
+  "data_stream": {},
+  "priority": 500,
+  "template": {
+    "settings": { "number_of_replicas": 0, "index.lifecycle.name": "centinela-retencion" },
+    "mappings": { "dynamic": true, "properties": {
+      "@timestamp": {"type":"date"}, "cf.metric": {"type":"keyword"}, "cf.zone": {"type":"keyword"},
+      "cf.requests": {"type":"long"}, "cf.cached_requests": {"type":"long"}, "cf.threats": {"type":"long"}, "cf.bytes": {"type":"long"},
+      "cf.page_views": {"type":"long"}, "cf.uniques": {"type":"long"}, "cf.country": {"type":"keyword"}, "cf.status": {"type":"keyword"},
+      "cf.host": {"type":"keyword"}, "cf.count": {"type":"long"}
+    } }
+  }
+}

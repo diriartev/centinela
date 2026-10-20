@@ -1,0 +1,55 @@
+# {{ ansible_managed }}
+name: edge
+services:
+  cloudflared:
+    image: {{ cloudflared_imagen }}
+    container_name: cloudflared
+    restart: unless-stopped
+    command: >-
+      tunnel --no-autoupdate --metrics 127.0.0.1:20241
+      run --token-file /run/secrets/tunnel_token
+    secrets: [tunnel_token]
+    user: "65532:65532"
+    networks:
+      edge:
+        ipv4_address: {{ ip_cloudflared_edge }}
+      admin:
+        ipv4_address: {{ ip_cloudflared_admin }}
+      dmz:
+        ipv4_address: {{ ip_cloudflared_dmz }}
+      mon:
+        ipv4_address: {{ ip_cloudflared_mon }}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "127.0.0.1:20241", "ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: local
+      options: { max-size: "10m", max-file: "3" }
+
+secrets:
+  tunnel_token:
+    file: ./secrets/tunnel_token
+
+networks:
+  edge:
+    external: true
+    name: {{ red_edge.nombre }}
+  admin:
+    external: true
+    name: {{ red_admin.nombre }}
+  dmz:
+    external: true
+    name: {{ red_dmz.nombre }}
+  mon:
+    external: true
+    name: {{ red_mon.nombre }}

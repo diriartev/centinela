@@ -1,0 +1,149 @@
+# {{ ansible_managed }}
+# Monitoreo de la infraestructura. Red "mon": interna, sin salida a internet.
+name: monitoreo
+x-base: &base
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  logging: { driver: local, options: { max-size: "5m", max-file: "3" } }
+
+services:
+  node-exporter:
+    <<: *base
+    image: {{ monitoreo_imagenes.node_exporter }}
+    container_name: node-exporter
+    # Necesita ver la red y los procesos del host; solo escucha en el gateway de la red "mon"
+    network_mode: host
+    pid: host
+    userns_mode: host
+    user: "65534:65534"
+    command:
+      - --path.rootfs=/host
+      - --web.listen-address={{ red_mon.gateway }}:9100
+      - --collector.textfile.directory=/textfile
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+|var/lib/containerd/.+|snap/.+)($|/)
+      - --no-collector.wifi
+      - --no-collector.infiniband
+      - --no-collector.nfs
+      - --no-collector.nfsd
+    volumes:
+      - /:/host:ro,rslave
+      - /var/lib/centinela/textfile:/textfile:ro
+    mem_limit: 96m
+    cpus: 0.25
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://{{ red_mon.gateway }}:9100/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  prometheus:
+    <<: *base
+    image: {{ monitoreo_imagenes.prometheus }}
+    container_name: prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time={{ prometheus_retencion }}
+      - --storage.tsdb.retention.size=8GB
+      - --web.listen-address=0.0.0.0:9090
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/reglas.yml:/etc/prometheus/reglas.yml:ro
+      - ./datos/prometheus:/prometheus
+    mem_limit: 768m
+    cpus: 1.0
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: { mon: { ipv4_address: {{ ip_prometheus }} } }
+
+  alertmanager:
+    <<: *base
+    image: {{ monitoreo_imagenes.alertmanager }}
+    container_name: alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.listen-address=0.0.0.0:9093
+      - --cluster.listen-address=
+    volumes:
+      - ./config/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./secrets/token:/etc/alertmanager/token:ro
+      - ./datos/alertmanager:/alertmanager
+    mem_limit: 96m
+    cpus: 0.25
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:9093/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: { mon: { ipv4_address: {{ ip_alertmanager }} } }
+
+  grafana:
+    <<: *base
+    image: {{ monitoreo_imagenes.grafana }}
+    container_name: grafana
+    environment:
+      GF_SERVER_ROOT_URL: "https://metrics.{{ cf_dominio }}"
+      GF_SERVER_ENFORCE_DOMAIN: "false"
+      # Identidad: la entrega Cloudflare Access (Auth0 + MFA). Solo se acepta desde cloudflared.
+      GF_AUTH_PROXY_ENABLED: "true"
+      GF_AUTH_PROXY_HEADER_NAME: "Cf-Access-Authenticated-User-Email"
+      GF_AUTH_PROXY_HEADER_PROPERTY: "email"
+      GF_AUTH_PROXY_AUTO_SIGN_UP: "true"
+      GF_AUTH_PROXY_WHITELIST: "{{ ip_cloudflared_mon }}"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_AUTO_ASSIGN_ORG_ROLE: "Viewer"
+      GF_USERS_VIEWERS_CAN_EDIT: "true"
+      GF_USERS_DEFAULT_THEME: "dark"
+      GF_SECURITY_ADMIN_PASSWORD__FILE: "/run/secrets/grafana_admin"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_SECURITY_COOKIE_SECURE: "true"
+      GF_SECURITY_COOKIE_SAMESITE: "strict"
+      GF_SECURITY_STRICT_TRANSPORT_SECURITY: "true"
+      GF_SECURITY_CONTENT_SECURITY_POLICY: "true"
+      GF_SECURITY_ALLOW_EMBEDDING: "false"
+      GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PUBLIC_DASHBOARDS_ENABLED: "false"
+      GF_SNAPSHOTS_EXTERNAL_ENABLED: "false"
+      GF_DATE_FORMATS_DEFAULT_TIMEZONE: "America/Bogota"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: "/var/lib/grafana/dashboards/centinela-salud.json"
+      GF_LOG_MODE: "console"
+      GF_LOG_LEVEL: "warn"
+    secrets: [grafana_admin]
+    tmpfs: ["/tmp"]
+    volumes:
+      - ./datos/grafana:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    mem_limit: 640m   # Grafana con 40 paneles: con 384m rozaba el límite
+    cpus: 0.5
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    networks: { mon: { ipv4_address: {{ ip_grafana }} } }
+
+secrets:
+  grafana_admin: { file: ./secrets/grafana_admin }
+networks:
+  mon: { external: true, name: {{ red_mon.nombre }} }

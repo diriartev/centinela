@@ -1,0 +1,9 @@
+---
+# Reglas de estilo que no aplican a este proyecto académico
+skip_list:
+  - var-naming[no-role-prefix]   # variables compartidas entre roles a propósito
+  - yaml[commas]                 # tablas alineadas para legibilidad
+  - yaml[line-length]
+  - command-instead-of-shell     # algunas tareas usan pipes a propósito
+  - command-instead-of-module    # systemctl is-active es solo lectura
+  - name[template]

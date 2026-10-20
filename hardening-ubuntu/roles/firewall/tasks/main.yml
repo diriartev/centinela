@@ -1,0 +1,199 @@
+---
+- name: Firewall | Paquetes
+  ansible.builtin.apt:
+    name: [ufw, knockd, fail2ban, nftables, python3-systemd]
+    state: present
+
+# ── UFW: primero las reglas que nos mantienen dentro, luego activar ─
+- name: Firewall | SSH público (solo mientras no se cierre con knock/Cloudflare)
+  community.general.ufw:
+    rule: limit              # además limita a 6 conexiones/30 s por IP
+    port: "{{ ssh_puerto }}"
+    proto: tcp
+    comment: ssh-publico
+    delete: "{{ cerrar_ssh_publico | bool }}"
+
+# Migración de puerto: el 22 sigue abierto solo durante la transición
+- name: Firewall | Puerto 22 durante la transición
+  community.general.ufw:
+    rule: limit
+    port: "22"
+    proto: tcp
+    comment: ssh-publico
+    delete: "{{ not (ssh_transicion | bool) or cerrar_ssh_publico | bool }}"
+  when: ssh_puerto | int != 22
+
+- name: Firewall | SSH desde redes de administración
+  community.general.ufw:
+    rule: allow
+    port: "{{ ssh_puerto }}"
+    proto: tcp
+    src: "{{ item }}"
+    comment: ssh-admin
+  loop: "{{ redes_admin }}"
+
+# Docker publica puertos con sus propias reglas de iptables y se SALTA UFW.
+# Este bloque (patrón ufw-docker) hace que el tráfico de fuera hacia los
+# contenedores pase por UFW: solo llega lo permitido con "ufw route allow".
+# Docker se salta UFW: todo el tráfico de/hacia contenedores se filtra aquí
+# (cadena DOCKER-USER). Reglas, en orden:
+#   1. respuestas de conexiones ya abiertas: pasan
+#   2. entre contenedores: lo decide Docker (redes separadas, icc)
+#   3. SALIDA: solo la red edge (cloudflared) y solo hacia Cloudflare (443/7844) y DNS.
+#      Nunca hacia redes privadas ni hacia la red de la institución.
+#   4. cualquier otra salida de contenedores: se registra y se descarta
+#   5. ENTRADA desde fuera: solo lo permitido con "ufw route allow"
+- name: Firewall | Integrar UFW con Docker (cadena DOCKER-USER)
+  ansible.builtin.blockinfile:
+    path: /etc/ufw/after.rules
+    marker: "# {mark} UFW Y DOCKER (Ansible)"
+    block: |
+      *filter
+      :ufw-user-forward - [0:0]
+      :ufw-docker-logging-deny - [0:0]
+      :vs-salida-bloqueada - [0:0]
+      :DOCKER-USER - [0:0]
+      -A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+      -A DOCKER-USER -m conntrack --ctstate INVALID -j DROP
+      -A DOCKER-USER -s {{ docker_pool }} -d {{ docker_pool }} -j RETURN
+      -A DOCKER-USER -s {{ docker_pool }} -d 10.0.0.0/8 -j vs-salida-bloqueada
+      -A DOCKER-USER -s {{ docker_pool }} -d 172.16.0.0/12 -j vs-salida-bloqueada
+      -A DOCKER-USER -s {{ docker_pool }} -d 192.168.0.0/16 -j vs-salida-bloqueada
+      -A DOCKER-USER -s {{ docker_pool }} -d 100.64.0.0/10 -j vs-salida-bloqueada
+      -A DOCKER-USER -s {{ docker_pool }} -d 169.254.0.0/16 -j vs-salida-bloqueada
+      -A DOCKER-USER -s {{ docker_pool }} -d {{ ansible_default_ipv4.network }}/{{ ansible_default_ipv4.prefix }} -j vs-salida-bloqueada
+      {% for ip in ips_con_salida %}
+      {% for dns in dns_permitidos %}
+      -A DOCKER-USER -s {{ ip }} -d {{ dns }} -p udp --dport 53 -j RETURN
+      -A DOCKER-USER -s {{ ip }} -d {{ dns }} -p tcp --dport 53 -j RETURN
+      {% endfor %}
+      {% for rango in cloudflare_ipv4 %}
+      -A DOCKER-USER -s {{ ip }} -d {{ rango }} -p tcp -m multiport --dports 443,7844 -j RETURN
+      -A DOCKER-USER -s {{ ip }} -d {{ rango }} -p udp --dport 7844 -j RETURN
+      {% endfor %}
+      {% endfor %}
+      -A DOCKER-USER -s {{ docker_pool }} -j vs-salida-bloqueada
+      -A DOCKER-USER -j ufw-user-forward
+      -A DOCKER-USER -p tcp -m tcp --tcp-flags FIN,SYN,RST,ACK SYN -d {{ docker_pool }} -j ufw-docker-logging-deny
+      -A DOCKER-USER -p udp -d {{ docker_pool }} -j ufw-docker-logging-deny
+      -A DOCKER-USER -j RETURN
+      -A vs-salida-bloqueada -m limit --limit 6/min --limit-burst 20 -j LOG --log-prefix "[DOCKER SALIDA BLOQUEADA] "
+      -A vs-salida-bloqueada -j DROP
+      -A ufw-docker-logging-deny -m limit --limit 3/min --limit-burst 10 -j LOG --log-prefix "[UFW DOCKER BLOCK] "
+      -A ufw-docker-logging-deny -j DROP
+      COMMIT
+  notify: Recargar ufw
+
+# cloudflared (red edge) entrega el SSH en el gateway de su red, nada más
+- name: Firewall | SSH desde cloudflared (red edge → host)
+  community.general.ufw:
+    rule: allow
+    direction: in
+    interface: "{{ red_edge.puente }}"
+    src: "{{ ip_cloudflared_edge }}"
+    dest: "{{ red_edge.gateway }}"
+    port: "{{ ssh_puerto }}"
+    proto: tcp
+    comment: ssh-cloudflared
+
+# Prometheus (red mon) lee las métricas de node-exporter en el gateway de su red, nada más
+- name: Firewall | Métricas del host para Prometheus (red mon → host)
+  community.general.ufw:
+    rule: allow
+    direction: in
+    interface: "{{ red_mon.puente }}"
+    src: "{{ ip_prometheus }}"
+    dest: "{{ red_mon.gateway }}"
+    port: "9100"
+    proto: tcp
+    comment: prometheus-node-exporter
+
+- name: Firewall | Políticas por defecto
+  community.general.ufw:
+    default: "{{ item.p }}"
+    direction: "{{ item.d }}"
+  loop:
+    - { d: incoming, p: deny }
+    - { d: outgoing, p: allow }
+    - { d: routed,   p: deny }
+
+- name: Firewall | Registro de lo bloqueado
+  community.general.ufw:
+    logging: low
+
+- name: Firewall | Activar UFW (las conexiones establecidas sobreviven)
+  community.general.ufw:
+    state: enabled
+
+# ── Port knocking (puerta de emergencia) ───────────────────────────
+- name: Firewall | knockd escuchando en la interfaz pública
+  ansible.builtin.template:
+    src: knockd.conf.j2
+    dest: /etc/knockd.conf
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Reiniciar knockd
+
+- name: Firewall | Habilitar knockd
+  ansible.builtin.copy:
+    dest: /etc/default/knockd
+    content: |
+      START_KNOCKD=1
+      KNOCKD_OPTS="-i {{ iface_servidor }}"
+    mode: "0644"
+  notify: Reiniciar knockd
+
+- name: Firewall | knockd activo
+  ansible.builtin.systemd:
+    name: knockd
+    enabled: true
+    state: started
+
+# ── Fail2Ban (nftables: tabla propia, no depende de UFW) ───────────
+- name: Firewall | Fail2Ban
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/jail.d/90-hardening.local
+    content: |
+      # Gestionado por Ansible
+      [DEFAULT]
+      banaction = nftables[type=multiport]
+      banaction_allports = nftables[type=allports]
+      ignoreip = 127.0.0.1/8 ::1 {{ ip_cloudflared_edge }} {{ ip_admin }} {{ (redes_admin + f2b_ignoreip) | join(' ') }}
+      bantime  = {{ f2b_bantime }}
+      findtime = {{ f2b_findtime }}
+      maxretry = {{ f2b_maxretry }}
+
+      [sshd]
+      enabled  = true
+      port     = {{ ssh_puerto }}{{ ',22' if ssh_transicion | bool else '' }}
+      backend  = systemd
+      mode     = aggressive
+
+      # Reincidentes: una semana fuera
+      [recidive]
+      enabled  = true
+      logpath  = /var/log/fail2ban.log
+      banaction = nftables[type=allports]
+      bantime  = 1w
+      findtime = 1d
+      maxretry = 3
+    mode: "0644"
+  notify: Reiniciar fail2ban
+
+# Lynis DEB-0880: jail.local existe (los ajustes reales están en jail.d/)
+- name: Firewall | jail.local
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/jail.local
+    content: |
+      # Gestionado por Ansible. Ajustes en /etc/fail2ban/jail.d/90-hardening.local
+      [DEFAULT]
+    mode: "0644"
+    force: false
+  notify: Reiniciar fail2ban
+
+- name: Firewall | Fail2Ban activo
+  ansible.builtin.systemd:
+    name: fail2ban
+    enabled: true
+    state: started

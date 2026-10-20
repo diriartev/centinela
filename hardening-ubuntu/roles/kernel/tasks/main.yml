@@ -1,0 +1,119 @@
+---
+# ── sysctl ─────────────────────────────────────────────────────────
+# Diferencias con la VM de AlmaLinux (para que el host SIGA SIRVIENDO):
+#   · ip_forward = 1  → Docker enruta el tráfico de los contenedores
+#   · vm.max_map_count = 262144 → requisito de Elasticsearch
+#   · accept_ra solo se apaga si el server no usa IPv6 por autoconfiguración
+- name: Kernel | Parámetros sysctl de hardening (en caliente + persistente)
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/60-hardening.conf
+    sysctl_set: true
+    reload: true
+    ignoreerrors: true
+  loop: "{{ (sysctl_hardening | combine(sysctl_ipv6_ra if ansible_default_ipv6.address is not defined else {})) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }} = {{ item.value }}"
+  vars:
+    sysctl_ipv6_ra:
+      net.ipv6.conf.all.accept_ra: 0
+      net.ipv6.conf.default.accept_ra: 0
+    sysctl_hardening:
+      kernel.randomize_va_space: 2
+      kernel.kptr_restrict: 2
+      kernel.dmesg_restrict: 1
+      kernel.yama.ptrace_scope: 1
+      kernel.unprivileged_bpf_disabled: 1
+      net.core.bpf_jit_harden: 2
+      kernel.perf_event_paranoid: 3
+      kernel.sysrq: 0
+      kernel.core_uses_pid: 1
+      kernel.kexec_load_disabled: 1
+      fs.suid_dumpable: 0
+      fs.protected_hardlinks: 1
+      fs.protected_symlinks: 1
+      fs.protected_fifos: 2
+      fs.protected_regular: 2
+      dev.tty.ldisc_autoload: 0
+      # Host de Docker
+      net.ipv4.ip_forward: 1
+      vm.max_map_count: 262144
+      vm.swappiness: 10
+      # Red IPv4
+      net.ipv4.tcp_syncookies: 1
+      net.ipv4.conf.all.send_redirects: 0
+      net.ipv4.conf.default.send_redirects: 0
+      net.ipv4.conf.all.accept_redirects: 0
+      net.ipv4.conf.default.accept_redirects: 0
+      net.ipv4.conf.all.secure_redirects: 0
+      net.ipv4.conf.default.secure_redirects: 0
+      net.ipv4.conf.all.accept_source_route: 0
+      net.ipv4.conf.default.accept_source_route: 0
+      net.ipv4.conf.all.rp_filter: 1
+      net.ipv4.conf.default.rp_filter: 1
+      net.ipv4.conf.all.log_martians: 1
+      net.ipv4.conf.default.log_martians: 1
+      net.ipv4.conf.all.bootp_relay: 0
+      net.ipv4.conf.all.proxy_arp: 0
+      net.ipv4.icmp_echo_ignore_broadcasts: 1
+      net.ipv4.icmp_ignore_bogus_error_responses: 1
+      net.ipv4.tcp_rfc1337: 1
+      # Red IPv6
+      net.ipv6.conf.all.accept_redirects: 0
+      net.ipv6.conf.default.accept_redirects: 0
+      net.ipv6.conf.all.accept_source_route: 0
+      net.ipv6.conf.default.accept_source_route: 0
+      net.ipv6.conf.all.forwarding: 0
+
+# ── Módulos ────────────────────────────────────────────────────────
+- name: Kernel | Bloquear módulos innecesarios
+  ansible.builtin.template:
+    src: hardening-modprobe.conf.j2
+    dest: /etc/modprobe.d/99-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Regenerar initramfs
+
+- name: Kernel | Descargar en caliente los que estén cargados
+  community.general.modprobe:
+    name: "{{ item.nombre | replace('-', '_') }}"
+    state: absent
+  loop: "{{ modulos_bloqueados }}"
+  loop_control:
+    label: "{{ item.nombre }}"
+  failed_when: false
+
+# ── Core dumps ─────────────────────────────────────────────────────
+- name: Kernel | Sin core dumps (limits)
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/10-coredump.conf
+    content: |
+      *     hard   core   0
+      *     soft   core   0
+    mode: "0644"
+
+- name: Kernel | Directorio de systemd-coredump
+  ansible.builtin.file:
+    path: /etc/systemd/coredump.conf.d
+    state: directory
+    mode: "0755"
+
+- name: Kernel | Sin almacenamiento de systemd-coredump
+  ansible.builtin.copy:
+    dest: /etc/systemd/coredump.conf.d/50-hardening.conf
+    content: |
+      [Coredump]
+      Storage=none
+      ProcessSizeMax=0
+    mode: "0644"
+
+# ── /dev/shm sin ejecución ─────────────────────────────────────────
+- name: Kernel | /dev/shm con nodev,nosuid,noexec
+  ansible.posix.mount:
+    path: /dev/shm
+    src: tmpfs
+    fstype: tmpfs
+    opts: defaults,nodev,nosuid,noexec
+    state: mounted

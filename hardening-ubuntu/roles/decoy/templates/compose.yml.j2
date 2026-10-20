@@ -1,0 +1,118 @@
+# {{ ansible_managed }}
+# Web señuelo + gateway de sensores web. Red "dmz": solo la ven cloudflared y el gateway.
+# Cada sensor de T-Pot tiene su propia red interna compartida únicamente con el gateway.
+name: decoy
+
+x-sensor: &sensor
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  # Las imágenes de T-Pot marcan sus binarios con cap_net_bind_service
+  cap_add: [NET_BIND_SERVICE]
+  security_opt: ["no-new-privileges:true"]
+  sysctls:
+    net.ipv4.ip_unprivileged_port_start: "0"
+  cpus: 0.25
+  pids_limit: 128
+  logging: { driver: local, options: { max-size: "5m", max-file: "2" } }
+
+services:
+  web:
+    build: { context: ./build }
+    image: centinela/decoy-web:1.1
+    container_name: hp-web
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    environment:
+      SENSORES: '{{ sensores_mapa | to_json }}'
+      TRAMPAS_CVE: '{{ trampas_cve | to_json }}'
+      DECOY_MARCA: '{{ decoy_marca }}'
+      DECOY_DOMINIO: '{{ cf_dominio }}'
+    volumes: ["./log:/log"]
+    mem_limit: 192m
+    cpus: 0.5
+    pids_limit: 192
+    networks:
+      dmz: { ipv4_address: {{ ip_decoy }} }
+{% for s in sensores_web %}
+      s-{{ s.nombre }}: { ipv4_address: {{ s.ip_gateway }} }
+{% endfor %}
+    logging: { driver: local, options: { max-size: "10m", max-file: "3" } }
+
+  wordpot:
+    <<: *sensor
+    image: {{ (sensores_web | selectattr('nombre', 'equalto', 'wordpot') | first).imagen }}
+    container_name: hp-wordpot
+    command: ["./wordpot", "--host", "0.0.0.0", "--port", "80"]
+    volumes:
+      - ./sensores/wordpot/log:/opt/wordpot/logs
+      - ./sensores/wordpot/wordpot.conf:/opt/wordpot/_internal/wordpot.conf:ro
+    mem_limit: 192m
+    healthcheck:
+      test: ["CMD-SHELL", "grep -qiE ':0050 [0-9A-F:]+ 0A' /proc/net/tcp /proc/net/tcp6"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: { s-wordpot: { ipv4_address: {{ (sensores_web | selectattr('nombre', 'equalto', 'wordpot') | first).ip }} } }
+
+  honeyaml:
+    <<: *sensor
+    image: {{ (sensores_web | selectattr('nombre', 'equalto', 'honeyaml') | first).imagen }}
+    container_name: hp-honeyaml
+    volumes: ["./sensores/honeyaml/log:/opt/honeyaml/log"]
+    mem_limit: 96m
+    healthcheck:
+      test: ["CMD-SHELL", "grep -qiE ':1F90 [0-9A-F:]+ 0A' /proc/net/tcp /proc/net/tcp6"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: { s-honeyaml: { ipv4_address: {{ (sensores_web | selectattr('nombre', 'equalto', 'honeyaml') | first).ip }} } }
+
+  citrixhoneypot:
+    <<: *sensor
+    image: {{ (sensores_web | selectattr('nombre', 'equalto', 'citrixhoneypot') | first).imagen }}
+    container_name: hp-citrix
+    volumes: ["./sensores/citrixhoneypot/log:/opt/citrixhoneypot/logs"]
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD-SHELL", "grep -qiE ':01BB [0-9A-F:]+ 0A' /proc/net/tcp /proc/net/tcp6"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: { s-citrixhoneypot: { ipv4_address: {{ (sensores_web | selectattr('nombre', 'equalto', 'citrixhoneypot') | first).ip }} } }
+
+  log4pot:
+    <<: *sensor
+    image: {{ (sensores_web | selectattr('nombre', 'equalto', 'log4pot') | first).imagen }}
+    container_name: hp-log4pot
+    tmpfs: ["/tmp:uid=2000,gid=2000"]
+    volumes:
+      - ./sensores/log4pot/log:/var/log/log4pot/log
+      - ./sensores/log4pot/payloads:/var/log/log4pot/payloads
+    mem_limit: 192m
+    healthcheck:
+      test: ["CMD-SHELL", "grep -qiE ':1F90 [0-9A-F:]+ 0A' /proc/net/tcp /proc/net/tcp6"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: { s-log4pot: { ipv4_address: {{ (sensores_web | selectattr('nombre', 'equalto', 'log4pot') | first).ip }} } }
+
+  h0neytr4p:
+    <<: *sensor
+    image: {{ (sensores_web | selectattr('nombre', 'equalto', 'h0neytr4p') | first).imagen }}
+    container_name: hp-h0neytr4p
+    volumes:
+      - ./sensores/h0neytr4p/log:/opt/h0neytr4p/log
+      - ./sensores/h0neytr4p/payloads:/data/h0neytr4p/payloads
+    mem_limit: 96m
+    # Binario Go sin shell: no admite healthcheck interno (el gateway registra si no responde)
+    networks: { s-h0neytr4p: { ipv4_address: {{ (sensores_web | selectattr('nombre', 'equalto', 'h0neytr4p') | first).ip }} } }
+
+networks:
+  dmz: { external: true, name: {{ red_dmz.nombre }} }
+{% for s in sensores_web %}
+  s-{{ s.nombre }}: { external: true, name: sensor-{{ s.nombre }} }
+{% endfor %}

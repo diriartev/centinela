@@ -1,0 +1,265 @@
+# Centinela · Reglas de alerta de la INFRAESTRUCTURA (Prometheus)
+# severidad: critica → te llega SIEMPRE (aunque hayas silenciado el bot) · alta → aviso normal
+# Las alertas pasan por Alertmanager → vigía → Worker de Cloudflare → Telegram.
+groups:
+  - name: servidor
+    rules:
+      - alert: ServidorSinMetricas
+        expr: up{job="servidor"} == 0
+        for: 2m
+        labels: { severidad: critica }
+        annotations:
+          resumen: "No llegan las métricas del servidor"
+          descripcion: "node-exporter no responde hace 2 min. Puede estar caído el exportador o el servidor tiene un problema serio."
+      - alert: CPUAlta
+        expr: 100 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100 > 85
+        for: 10m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "CPU alta: {{ $value | printf \"%.0f\" }}%"
+          descripcion: "El uso de CPU lleva 10 min por encima del 85%. Revisa /estado o Grafana para ver qué contenedor la consume."
+      - alert: CPUCritica
+        expr: 100 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100 > 95
+        for: 5m
+        labels: { severidad: critica }
+        annotations:
+          resumen: "CPU al límite: {{ $value | printf \"%.0f\" }}%"
+          descripcion: "La CPU está casi al 100% hace 5 min. Posible ataque de denegación de servicio, minero o proceso desbocado."
+      - alert: RAMAlta
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 85
+        for: 10m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "Memoria RAM alta: {{ $value | printf \"%.0f\" }}%"
+          descripcion: "Queda menos del 15% de RAM libre desde hace 10 min."
+      - alert: RAMCritica
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 95
+        for: 3m
+        labels: { severidad: critica }
+        annotations:
+          resumen: "Memoria RAM agotándose: {{ $value | printf \"%.0f\" }}%"
+          descripcion: "Queda menos del 5% de RAM. El kernel puede empezar a matar procesos (OOM)."
+      - alert: SwapEnUso
+        expr: (1 - node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes) * 100 > 50 and node_memory_SwapTotal_bytes > 0
+        for: 15m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "Uso de swap alto: {{ $value | printf \"%.0f\" }}%"
+          descripcion: "El servidor está usando mucho swap: todo se vuelve lento. Suele indicar falta de RAM."
+      - alert: OOMKill
+        expr: increase(node_vmstat_oom_kill[10m]) > 0
+        labels: { severidad: critica }
+        annotations:
+          resumen: "El kernel mató procesos por falta de memoria (OOM)"
+          descripcion: "Hubo {{ $value | printf \"%.0f\" }} OOM kill en los últimos 10 min. Algún contenedor se reinició o cayó."
+      - alert: DiscoCasiLleno
+        expr: (node_filesystem_avail_bytes{fstype=~"ext4|xfs|btrfs|vfat"} / node_filesystem_size_bytes{fstype=~"ext4|xfs|btrfs|vfat"}) * 100 < 15
+        for: 10m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "Disco {{ $labels.mountpoint }} con poco espacio: {{ $value | printf \"%.0f\" }}% libre"
+          descripcion: "Queda menos del 15% libre en {{ $labels.mountpoint }}."
+      - alert: DiscoLleno
+        expr: (node_filesystem_avail_bytes{fstype=~"ext4|xfs|btrfs|vfat"} / node_filesystem_size_bytes{fstype=~"ext4|xfs|btrfs|vfat"}) * 100 < 7
+        for: 5m
+        labels: { severidad: critica }
+        annotations:
+          resumen: "Disco {{ $labels.mountpoint }} casi lleno: {{ $value | printf \"%.1f\" }}% libre"
+          descripcion: "Con el disco lleno Elasticsearch deja de escribir y los servicios fallan. Libera espacio ya."
+      - alert: DiscoSeLlenaraPronto
+        expr: predict_linear(node_filesystem_avail_bytes{fstype=~"ext4|xfs|btrfs"}[6h], 24 * 3600) < 0 and node_filesystem_avail_bytes{fstype=~"ext4|xfs|btrfs"} / node_filesystem_size_bytes{fstype=~"ext4|xfs|btrfs"} < 0.4
+        for: 30m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "{{ $labels.mountpoint }} se llenará en menos de 24 h"
+          descripcion: "Al ritmo de las últimas 6 h, el disco {{ $labels.mountpoint }} se queda sin espacio en menos de un día."
+      - alert: DiscoSoloLectura
+        expr: node_filesystem_readonly{fstype=~"ext4|xfs|btrfs"} == 1
+        for: 2m
+        labels: { severidad: critica }
+        annotations:
+          resumen: "{{ $labels.mountpoint }} quedó en solo lectura"
+          descripcion: "Suele indicar un error de disco o del sistema de archivos."
+      - alert: InodosBajos
+        expr: node_filesystem_files_free{fstype=~"ext4|xfs"} / node_filesystem_files{fstype=~"ext4|xfs"} * 100 < 10
+        for: 15m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "Quedan pocos inodos en {{ $labels.mountpoint }}"
+          descripcion: "Menos del 10% de inodos libres: no se podrán crear archivos aunque haya espacio."
+      - alert: CargaAlta
+        expr: node_load5 / scalar(count(node_cpu_seconds_total{mode="idle"})) > 2
+        for: 15m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "Carga del sistema muy alta"
+          descripcion: "La carga lleva 15 min por encima del doble de núcleos disponibles."
+      - alert: EsperaDeDiscoAlta
+        expr: avg(rate(node_cpu_seconds_total{mode="iowait"}[5m])) * 100 > 25
+        for: 10m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "El disco no da abasto (iowait {{ $value | printf \"%.0f\" }}%)"
+          descripcion: "La CPU pasa mucho tiempo esperando al disco; todo se vuelve lento."
+      - alert: RelojDesfasado
+        expr: abs(node_timex_offset_seconds) > 0.5 or node_timex_sync_status == 0
+        for: 15m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "El reloj del servidor no está sincronizado"
+          descripcion: "Con la hora mal, fallan TLS, los tokens de Cloudflare Access y la firma del bot."
+      - alert: ServidorReiniciado
+        expr: time() - node_boot_time_seconds < 600
+        labels: { severidad: alta }
+        annotations:
+          resumen: "El servidor se reinició hace menos de 10 min"
+          descripcion: "Si no lo reiniciaste tú, revisa el motivo (corte de energía, kernel panic, mantenimiento de la institución)."
+      - alert: ReinicioPendiente
+        expr: centinela_reinicio_pendiente == 1
+        for: 72h
+        labels: { severidad: alta }
+        annotations:
+          resumen: "Hay actualizaciones que piden reiniciar hace más de 3 días"
+          descripcion: "Las actualizaciones automáticas de seguridad necesitan un reinicio para aplicarse por completo (kernel)."
+      - alert: ServiciosFallidos
+        expr: centinela_systemd_fallidos > 0
+        for: 10m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "{{ $value }} servicio(s) de systemd en estado fallido"
+          descripcion: "Revisa con: systemctl --failed"
+      - alert: RedConErrores
+        expr: sum by (device) (rate(node_network_receive_errs_total[5m]) + rate(node_network_transmit_errs_total[5m])) > 5
+        for: 10m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "Errores de red en {{ $labels.device }}"
+          descripcion: "La interfaz {{ $labels.device }} registra errores de transmisión: posible problema físico o de la red de la institución."
+
+  - name: contenedores
+    rules:
+      - alert: ContenedorCaido
+        expr: centinela_contenedor_arriba == 0
+        for: 2m
+        labels: { severidad: critica }
+        annotations:
+          resumen: "Contenedor caído: {{ $labels.nombre }}"
+          descripcion: "{{ $labels.nombre }} no está corriendo hace 2 min."
+      - alert: ContenedorNoSano
+        expr: centinela_contenedor_salud == 0
+        for: 3m
+        labels: { severidad: critica }
+        annotations:
+          resumen: "Contenedor con fallas: {{ $labels.nombre }}"
+          descripcion: "El chequeo de salud de {{ $labels.nombre }} falla hace 3 min."
+      - alert: ContenedorReiniciando
+        expr: increase(centinela_contenedor_reinicios[15m]) > 2
+        labels: { severidad: alta }
+        annotations:
+          resumen: "{{ $labels.nombre }} se reinicia en bucle"
+          descripcion: "Se reinició {{ $value | printf \"%.0f\" }} veces en 15 min."
+      - alert: ContenedorSinMemoria
+        expr: (centinela_contenedor_memoria_bytes{nombre!="es01"} / centinela_contenedor_memoria_limite_bytes{nombre!="es01"} > 0.92) and centinela_contenedor_memoria_limite_bytes{nombre!="es01"} < 15e9
+        for: 10m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "{{ $labels.nombre }} está al {{ $value | humanizePercentage }} de su límite de memoria"
+          descripcion: "Si llega al 100% Docker lo reinicia. Considera subir su mem_limit. (Elasticsearch se excluye: usa casi todo su límite a propósito como caché.)"
+      - alert: ContenedorCPUAlta
+        expr: centinela_contenedor_cpu_porcentaje > 90
+        for: 15m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "{{ $labels.nombre }} usa {{ $value | printf \"%.0f\" }}% de CPU"
+          descripcion: "Uso sostenido de CPU de un contenedor (15 min)."
+      - alert: EstadoDesactualizado
+        expr: time() - centinela_estado_timestamp > 180
+        for: 2m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "El script de estado del host dejó de correr"
+          descripcion: "centinela-estado.timer no actualiza hace más de 3 min: el panel y estas alertas se quedan sin datos de contenedores."
+
+  - name: siem
+    rules:
+      - alert: ElasticsearchRojo
+        expr: centinela_es_salud >= 2
+        for: 2m
+        labels: { severidad: critica }
+        annotations:
+          resumen: "Elasticsearch en ROJO o sin respuesta"
+          descripcion: "El SIEM no puede guardar o leer datos. Revisa el contenedor es01."
+      - alert: ElasticsearchAmarillo
+        expr: centinela_es_salud == 1
+        for: 15m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "Elasticsearch en amarillo"
+          descripcion: "Hay índices sin todas sus copias. En un solo nodo suele ser temporal."
+      - alert: PicoDeAtaques
+        expr: centinela_eventos_5m > 3000
+        for: 5m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "Pico de ataques: {{ $value }} eventos en 5 min"
+          descripcion: "Mucho más tráfico de lo normal contra los sensores. Puede ser un escaneo masivo o un intento de DoS (Cloudflare lo amortigua)."
+
+  # Integridad del servidor REAL. El detalle (qué archivo, quién, con qué comando) lo manda el vigía
+  # al bot en cuanto ocurre; estas alertas con aviso="vigia" solo se MUESTRAN en Grafana (no se repiten en Telegram).
+  - name: integridad
+    rules:
+      - alert: ArchivosDelSistemaModificados
+        expr: centinela_integridad_inesperados > 0
+        labels: { severidad: critica, aviso: vigia }
+        annotations:
+          resumen: "AIDE: {{ $value }} archivo(s) del sistema cambiaron sin explicación"
+          descripcion: "No coinciden con apt ni con un despliegue de Ansible. El detalle llegó al bot. Se apaga en la próxima revisión limpia (1 h)."
+      - alert: CambioSensibleManual
+        expr: sum(centinela_audit_eventos_24h{origen="manual"}) > 0
+        labels: { severidad: critica, aviso: vigia }
+        annotations:
+          resumen: "auditd: {{ $value }} cambio(s) sensible(s) hechos a mano en 24 h"
+          descripcion: "Usuarios, sudo, SSH, PAM, cron, servicios o firewall modificados fuera de Ansible/apt. El detalle llegó al bot."
+      - alert: IntegridadSinRevisar
+        expr: time() - centinela_integridad_ultima_revision > 3 * 3600
+        for: 10m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "AIDE no revisa el servidor hace más de 3 h"
+          descripcion: "El temporizador centinela-integridad no corrió. Revisa: systemctl status centinela-integridad.timer"
+      - alert: IntegridadConError
+        expr: centinela_integridad_error == 1
+        labels: { severidad: alta }
+        annotations:
+          resumen: "La revisión de AIDE falló"
+          descripcion: "Revisa: journalctl -u centinela-integridad"
+      - alert: AuditdCaido
+        expr: centinela_auditd_activo == 0
+        for: 2m
+        labels: { severidad: critica }
+        annotations:
+          resumen: "auditd está detenido"
+          descripcion: "El servidor dejó de registrar cambios sensibles. Un intruso lo apagaría primero: revisa ya."
+      - alert: AuditPierdeEventos
+        expr: increase(centinela_audit_perdidos[1h]) > 0
+        labels: { severidad: alta }
+        annotations:
+          resumen: "auditd perdió {{ $value }} eventos en 1 h"
+          descripcion: "El kernel generó eventos más rápido de lo que auditd los guarda."
+      - alert: ReglasDeAuditoriaBorradas
+        expr: centinela_audit_reglas < 40
+        for: 2m
+        labels: { severidad: critica }
+        annotations:
+          resumen: "Solo quedan {{ $value }} reglas de auditd cargadas"
+          descripcion: "Alguien borró reglas de auditoría (auditctl -D) o no cargaron al arrancar."
+
+  - name: monitoreo
+    rules:
+      - alert: ObjetivoDeMonitoreoCaido
+        expr: up{job!="servidor"} == 0
+        for: 5m
+        labels: { severidad: alta }
+        annotations:
+          resumen: "{{ $labels.job }} no responde a Prometheus"
+          descripcion: "Un componente del monitoreo ({{ $labels.job }}) no entrega métricas hace 5 min."

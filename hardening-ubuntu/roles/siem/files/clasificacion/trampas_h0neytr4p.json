@@ -1,0 +1,614 @@
+[
+ {
+  "nombre": "exposed-mysql-initial",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "Exposed mysql.initial trap",
+  "carpeta": "exposed_mysql_initial",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/mysql.initial.sql"
+   }
+  ]
+ },
+ {
+  "nombre": "CVE-2017-12637",
+  "mitre": "",
+  "riesgo": "7.5",
+  "referencias": "https://nvd.nist.gov/vuln/detail/CVE-2017-12637",
+  "descripcion": "Directory traversal vulnerability in scheduler/ui/js/ffffffffbca41eb4/UIUtilJavaScriptJS in SAP NetWeaver Application Server Java 7.5 allows remote attackers to read arbitrary files via a .. (dot dot) in the query string, as exploited in the wild in August 2017, aka SAP Security Note 2486657.",
+  "carpeta": "CVEs",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/scheduler/ui/js/ffffffffbca41eb4/UIUtilJavaScriptJS*"
+   }
+  ]
+ },
+ {
+  "nombre": "CVE-2018-2791",
+  "mitre": "",
+  "riesgo": "8.2",
+  "referencias": "https://nvd.nist.gov/vuln/detail/CVE-2018-2791",
+  "descripcion": "Vulnerability in the Oracle WebCenter Sites component of Oracle Fusion Middleware",
+  "carpeta": "CVEs",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/servlet/Satellite"
+   }
+  ]
+ },
+ {
+  "nombre": "CVE-2019-19781",
+  "mitre": "T1190",
+  "riesgo": "9.8",
+  "referencias": "https://www.kb.cert.org/vuls/id/619785, https://isc.sans.edu/diary/25700, https://www.cisa.gov/news-events/cybersecurity-advisories/aa20-031a",
+  "descripcion": "An issue was discovered in Citrix Application Delivery Controller (ADC) and Gateway 10.5, 11.1, 12.0, 12.1, and 13.0. They allow Directory Traversal.",
+  "carpeta": "CVEs",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/vpns/cfg/smb.conf"
+   },
+   {
+    "metodo": "GET",
+    "url": "/vpn/../vpns/cfg/smb.conf"
+   },
+   {
+    "metodo": "POST",
+    "url": "/vpns/portal/scripts/newbm.pl"
+   },
+   {
+    "metodo": "POST",
+    "url": "/vpn/../vpns/portal/scripts/newbm.pl"
+   },
+   {
+    "metodo": "GET",
+    "url": "/vpns/portal/*.xml"
+   },
+   {
+    "metodo": "GET",
+    "url": "/vpn/../vpns/portal/*.xml"
+   }
+  ]
+ },
+ {
+  "nombre": "CVE-2020-3452",
+  "mitre": "",
+  "riesgo": "7.5",
+  "referencias": "https://nvd.nist.gov/vuln/detail/CVE-2020-3452",
+  "descripcion": "A vulnerability in the web services interface of Cisco Adaptive Security Appliance (ASA) Software and Cisco Firepower Threat Defense (FTD) Software could allow an unauthenticated, remote attacker to conduct directory traversal attacks and read sensitive files on a targeted system. The vulnerability is due to a lack of proper input validation of URLs in HTTP requests processed by an affected device",
+  "carpeta": "CVEs",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/+CSCOT+/translation-table"
+   },
+   {
+    "metodo": "GET",
+    "url": "/+CSCOT+/oem-customization"
+   }
+  ]
+ },
+ {
+  "nombre": "CVE-2021-21985",
+  "mitre": "",
+  "riesgo": "9.8",
+  "referencias": "https://nvd.nist.gov/vuln/detail/CVE-2021-21985",
+  "descripcion": "vCenter-Virtual-SAN-Health-Check-plug-in",
+  "carpeta": "CVEs",
+  "patrones": [
+   {
+    "metodo": "POST",
+    "url": "/ui/h5-vsan/rest*"
+   }
+  ]
+ },
+ {
+  "nombre": "CVE-2024-38816",
+  "mitre": "",
+  "riesgo": "7.5",
+  "referencias": "https://nvd.nist.gov/vuln/detail/CVE-2024-38816",
+  "descripcion": "CVE-2024-38816: Path traversal vulnerability in functional web frameworks.",
+  "carpeta": "CVEs",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/static/link/*"
+   }
+  ]
+ },
+ {
+  "nombre": "CVE-2025-25257",
+  "mitre": "T1190,T1566,T1059",
+  "riesgo": "9.8",
+  "referencias": "https://pwner.gg/blog/2025-07-10-fortiweb-fabric-rce,https://labs.watchtowr.com/pre-auth-sql-injection-to-rce-fortinet-fortiweb-fabric-connector-cve-2025-25257/",
+  "descripcion": "Fortinet FortiWeb Fabric Connector before 7.0.4 and 7.2.2 is vulnerable to a pre-auth SQL injection (SQLi) in the /api/fabric/device/status endpoint, allowing unauthenticated remote code execution (RCE) via crafted Authorization headers. Exploitation can lead to arbitrary file write and code execution as root.",
+  "carpeta": "CVEs",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/api/fabric/device/status"
+   },
+   {
+    "metodo": "GET",
+    "url": "/api/fabric/device/status"
+   },
+   {
+    "metodo": "GET",
+    "url": "/api/fabric/device/status"
+   },
+   {
+    "metodo": "GET",
+    "url": "/cgi-bin/ml-draw.py"
+   }
+  ]
+ },
+ {
+  "nombre": "CVE-2025-49706",
+  "mitre": "T1190,T1584,T1110",
+  "riesgo": "8.2",
+  "referencias": "https://github.com/AdityaBhatt3010/CVE-2025-49706-SharePoint-Spoofing-Vulnerability-Under-Active-Exploitation,https://msrc.microsoft.com/update-guide/vulnerability/CVE-2025-49706,https://nvd.nist.gov/vuln/detail/CVE-2025-49706,https://thehackernews.com/2025/07/critical-microsoft-sharepoint-flaw.html",
+  "descripcion": "Microsoft SharePoint is vulnerable to a spoofing vulnerability (CVE-2025-49706) that allows attackers to craft malicious URLs and spoof headers (e.g., X-UserToken, X-Ms-Client-Request-Id) to bypass authentication, impersonate users, and potentially upload web shells. The flaw is actively exploited in the wild and can be chained for RCE.",
+  "carpeta": "CVEs",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "*_layouts/15/SignOut.aspx"
+   },
+   {
+    "metodo": "POST",
+    "url": "*_layouts/15/upload.aspx"
+   },
+   {
+    "metodo": "POST",
+    "url": "*_layouts/15/UserProfileService.asmx"
+   }
+  ]
+ },
+ {
+  "nombre": "CVE-2026-10520",
+  "mitre": "T1190,T1059",
+  "riesgo": "10.0",
+  "referencias": "https://hub.ivanti.com/s/article/Security-Advisory-Ivanti-Sentry-CVE-2026-10520-CVE-2026-10523?language=en_US,https://nvd.nist.gov/vuln/detail/CVE-2026-10520,https://www.rapid7.com/blog/post/etr-cve-2026-10520-cve-2026-10523-multiple-critical-vulnerabilities-affecting-ivanti-sentry/,https://labs.watchtowr.com/more-evidence-that-words-dont-mean-what-we-thought-they-meant-ivanti-sentry-pre-auth-os-command-injection-cve-2026-10520/,https://cyberpress.org/ivanti-command-injection-flaw/",
+  "descripcion": "Ivanti Sentry before R10.5.2, R10.6.2, and R10.7.1 is affected by a pre-authenticated OS command injection vulnerability in the MICS configuration API. Public analysis describes unauthenticated POST requests to /mics/api/v2/sentry/mics-config/handleMessage where the message parameter is parsed as an internal execute command and can reach commandexec/reqandres handling. This trap detects that high-",
+  "carpeta": "CVEs",
+  "patrones": [
+   {
+    "metodo": "POST",
+    "url": "/mics/api/v2/sentry/mics-config/handleMessage*"
+   },
+   {
+    "metodo": "GET",
+    "url": "/mics/api/v2/sentry/mics-config/handleMessage*"
+   }
+  ]
+ },
+ {
+  "nombre": "CVE-2026-41940",
+  "mitre": "T1190,T1078,T1059",
+  "riesgo": "9.8",
+  "referencias": "https://www.cpanel.net/blog/security/security-update-cve-2026-41940/,https://www.cve.org/CVERecord?id=CVE-2026-41940,https://www.rapid7.com/db/modules/exploit/multi/http/cpanel_whm_auth_bypass_rce/",
+  "descripcion": "cPanel & WHM after v11.40 is affected by an authentication bypass in session handling. cPanel describes a missing sanitisation step in the Basic authentication session-write path; public reporting describes exploitation using a Basic Authorization header and a manipulated whostmgrsession cookie. This trap uses h0neytr4p's Authorization-Basic-Decoded virtual header to detect known session-poisoning",
+  "carpeta": "CVEs",
+  "patrones": [
+   {
+    "metodo": "POST",
+    "url": "*/login/"
+   },
+   {
+    "metodo": "GET",
+    "url": "*/login/"
+   },
+   {
+    "metodo": "GET",
+    "url": "*/cpsess*/json-api/passwd"
+   },
+   {
+    "metodo": "POST",
+    "url": "*/cpsess*/json-api/passwd"
+   }
+  ]
+ },
+ {
+  "nombre": "CVE-2026-42945",
+  "mitre": "T1190,T1499",
+  "riesgo": "9.2",
+  "referencias": "https://nginx.org/en/security_advisories.html,https://www.cve.org/CVERecord?id=CVE-2026-42945,https://depthfirst.com/research/nginx-rift-achieving-nginx-rce-via-an-18-year-old-vulnerability,https://github.com/depthfirstdisclosures/nginx-rift",
+  "descripcion": "NGINX Rift is a heap buffer overflow in ngx_http_rewrite_module. It is reachable on affected NGINX Open Source and NGINX Plus versions when rewrite rules use unnamed PCRE captures such as $1 or $2 together with a replacement string containing a question mark, followed by rewrite, if, or set. The trap catches public PoC-style probes and generic long plus-sign URI payloads commonly used to trigger t",
+  "carpeta": "CVEs",
+  "patrones": [
+   {
+    "metodo": "POST",
+    "url": "*/spray"
+   },
+   {
+    "metodo": "GET",
+    "url": "*/api/*++++++++++++++++*"
+   },
+   {
+    "metodo": "GET",
+    "url": "*++++++++++++++++*"
+   }
+  ]
+ },
+ {
+  "nombre": "CVE-2026-49448",
+  "mitre": "T1190,T1556,T1078",
+  "riesgo": "9.8",
+  "referencias": "https://github.com/goauthentik/authentik/security/advisories/GHSA-xp7f-xjjx-gwm8,https://docs.goauthentik.io/docs/developer-docs/api/reference/flows-executor-get,https://www.cve.org/CVERecord?id=CVE-2026-49448",
+  "descripcion": "authentik before 2025.12.6, 2026.2.4, and 2026.5.1 can bypass a Source stage when the current flow receives an empty POST. The official advisory's proof path uses the flow executor endpoint after an identification step. This trap detects empty POSTs to the API flow executor and common browser flow executor paths, plus the preceding username-only identification request.",
+  "carpeta": "CVEs",
+  "patrones": [
+   {
+    "metodo": "POST",
+    "url": "*/api/v3/flows/executor/*/"
+   },
+   {
+    "metodo": "POST",
+    "url": "*/flows/executor/*/"
+   },
+   {
+    "metodo": "POST",
+    "url": "*/api/v3/flows/executor/*/"
+   }
+  ]
+ },
+ {
+  "nombre": "CVE-2026-8206",
+  "mitre": "T1190,T1110,T1078",
+  "riesgo": "9.8",
+  "referencias": "https://patchstack.com/database/wordpress/plugin/kirki/vulnerability/wordpress-kirki-plugin-6-0-0-6-0-6-unauthenticated-privilege-escalation-via-handle-forgot-password-vulnerability,https://www.wordfence.com/threat-intel/vulnerabilities/wordpress-plugins/kirki,https://www.cve.org/CVERecord?id=CVE-2026-8206",
+  "descripcion": "Kirki - Freeform Page Builder, Website Builder & Customizer for WordPress 6.0.0 through 6.0.6 is affected by an unauthenticated privilege-escalation flaw in its forgot-password flow. Public reports describe attackers POSTing a target username and attacker-controlled email address to the KirkiComponentLibrary forgot-password REST endpoint. This trap detects those REST requests for both form and JSO",
+  "carpeta": "CVEs",
+  "patrones": [
+   {
+    "metodo": "POST",
+    "url": "*/wp-json/KirkiComponentLibrary/v1/kirki-forgot-password"
+   },
+   {
+    "metodo": "POST",
+    "url": "*/wp-json/KirkiComponentLibrary/v1/kirki-forgot-password"
+   }
+  ]
+ },
+ {
+  "nombre": "apache-config",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "Apache Config file disclosure trap",
+  "carpeta": "apache_config",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/apache.conf"
+   }
+  ]
+ },
+ {
+  "nombre": "nginx_config_exposed",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "Exposed nginx.conf trap",
+  "carpeta": "nginx_config",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/nginx.conf"
+   }
+  ]
+ },
+ {
+  "nombre": "exposed-web-config",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "Web Config file exposed trap",
+  "carpeta": "web_config",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/web.config"
+   }
+  ]
+ },
+ {
+  "nombre": "dvwa-default-login",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "DVWA Default Login trap",
+  "carpeta": "DefaultCredentials",
+  "patrones": [
+   {
+    "metodo": "POST",
+    "url": "/login.php"
+   }
+  ]
+ },
+ {
+  "nombre": "env_config_file",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": ".env config file exposed trap",
+  "carpeta": "DefaultCredentials",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/.env*"
+   }
+  ]
+ },
+ {
+  "nombre": "git_config",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "Git config exposed trap",
+  "carpeta": "DefaultCredentials",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "*/.git*"
+   }
+  ]
+ },
+ {
+  "nombre": "jenkins_home",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "",
+  "carpeta": "DefaultCredentials",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/jenkins"
+   }
+  ]
+ },
+ {
+  "nombre": "nagois-default-creds",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "Nagois Admin console default credentials trap",
+  "carpeta": "DefaultCredentials",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/nagios/side.php*"
+   }
+  ]
+ },
+ {
+  "nombre": "ofbiz-default-credentials",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "Apache OfBiz Default Credentials trap",
+  "carpeta": "DefaultCredentials",
+  "patrones": [
+   {
+    "metodo": "POST",
+    "url": "/control/login"
+   }
+  ]
+ },
+ {
+  "nombre": "rabbitmq-default-admin",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "RabbitMQ Default Credentials trap",
+  "carpeta": "DefaultCredentials",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/api/whoami"
+   }
+  ]
+ },
+ {
+  "nombre": "rockmongo-default-creds",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "",
+  "carpeta": "DefaultCredentials",
+  "patrones": [
+   {
+    "metodo": "POST",
+    "url": "/index.php"
+   }
+  ]
+ },
+ {
+  "nombre": "wordpress_user_enum",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "wordpress user enumeration trap",
+  "carpeta": "DefaultCredentials",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/wp-json/wp/v2/users/"
+   }
+  ]
+ },
+ {
+  "nombre": "zabbix-default-credentials",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "Zabbix Default Credentials trap",
+  "carpeta": "DefaultCredentials",
+  "patrones": [
+   {
+    "metodo": "POST",
+    "url": "/index.php"
+   }
+  ]
+ },
+ {
+  "nombre": "ibm-infoprint-lfi",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "IBM InfoPrint 4247-Z03 Impact Matrix Printer - Directory Traversal trap",
+  "carpeta": "Vulnerabilities",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/*/etc/passwd"
+   }
+  ]
+ },
+ {
+  "nombre": "jira-unauthenticated-adminprojects",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "Jira Unauthenticated Admin Projects trap",
+  "carpeta": "Vulnerabilities",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/rest/menu/latest/admin"
+   }
+  ]
+ },
+ {
+  "nombre": "jira-unauthenticated-adminprojects",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "Jira Unauthenticated Admin Projects trap",
+  "carpeta": "Vulnerabilities",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/rest/api/2/dashboard"
+   }
+  ]
+ },
+ {
+  "nombre": "jira-unauthenticated-projectcategories",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "Jira Unauthenticated Project Categories trap",
+  "carpeta": "Vulnerabilities",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/rest/api/2/projectCategory"
+   }
+  ]
+ },
+ {
+  "nombre": "jira-unauthenticated-resolutions",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "Jira Unauthenticated Resolutions trap",
+  "carpeta": "Vulnerabilities",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/rest/api/2/resolution"
+   }
+  ]
+ },
+ {
+  "nombre": "jira-unauthenticated-user-picker",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "Jira Unauthenticated User Picker trap",
+  "carpeta": "Vulnerabilities",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/secure/popups/UserPickerBrowser.jspa"
+   }
+  ]
+ },
+ {
+  "nombre": "springboot-h2-db-rce",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "Spring Boot H2 Database RCE trap",
+  "carpeta": "Vulnerabilities",
+  "patrones": [
+   {
+    "metodo": "POST",
+    "url": "/actuator/env"
+   }
+  ]
+ },
+ {
+  "nombre": "thinkphp-2-rce",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "ThinkPHP 2 / 3 's' Parameter RCE trap",
+  "carpeta": "Vulnerabilities",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/index.php"
+   }
+  ]
+ },
+ {
+  "nombre": "jenkins_home",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "",
+  "carpeta": "default_creds",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/jenkins"
+   }
+  ]
+ },
+ {
+  "nombre": "nagois-default-creds",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "Nagois Admin console default credentials trap",
+  "carpeta": "default_creds",
+  "patrones": [
+   {
+    "metodo": "GET",
+    "url": "/nagios/side.php"
+   }
+  ]
+ },
+ {
+  "nombre": "zabbix-default-credentials",
+  "mitre": "",
+  "riesgo": null,
+  "referencias": "",
+  "descripcion": "Zabbix Default Credentials trap",
+  "carpeta": "default_creds",
+  "patrones": [
+   {
+    "metodo": "POST",
+    "url": "/index.php"
+   }
+  ]
+ }
+]

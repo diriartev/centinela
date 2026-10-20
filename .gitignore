@@ -1,0 +1,25 @@
+# ── Nunca se publica: secretos y datos de TU instalación ──
+config.env
+*.env
+!config.example.env
+hardening-ubuntu/secretos/
+hardening-ubuntu/group_vars/all/secretos.yml
+hardening-ubuntu/group_vars/all/stack.yml
+hardening-ubuntu/roles/decoy/files/app/honeytokens.json
+CREDENCIALES/
+backups/
+muestras/
+hardening-ubuntu/reportes/
+*.pem
+*.key
+*.crt
+id_*
+
+# ── Basura de herramientas ──
+*.retry
+__pycache__/
+*.pyc
+.ansible/
+.wrangler/
+node_modules/
+.DS_Store

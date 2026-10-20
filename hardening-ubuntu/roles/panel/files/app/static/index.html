@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0B0B16">
+<meta name="robots" content="noindex,nofollow">
+<title>Centinela · Centro de mando</title>
+<link rel="icon" href="https://assets.example.com/favicon.ico">
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body class="cargando-ini">
+<div class="fondo"><i class="o1"></i><i class="o2"></i><i class="grid"></i></div>
+<header class="barra">
+  <div class="marca"><img src="https://assets.example.com/logo-150.png" alt=""><div><b>Centinela</b><span>Centro de mando del honeypot</span></div></div>
+  <div class="vivo"><i></i><span id="vivo-txt">En vivo</span></div>
+  <nav class="rango" id="rango">
+    <button data-r="1h">1 h</button><button data-r="24h" class="act">24 h</button><button data-r="7d">7 d</button><button data-r="30d">30 d</button>
+  </nav>
+  <nav class="apps" aria-label="Paneles de Centinela">
+    <a class="app act" href="/" aria-current="page"><i class="ic ic-mando"></i><span><b>Centro de mando</b><small>ataques en vivo</small></span></a>
+    <a class="app" href="https://metrics.example.com" target="_blank" rel="noopener"><i class="ic ic-salud"></i><span><b>Grafana</b><small>salud del servidor</small></span></a>
+    <a class="app" href="https://insights.example.com" target="_blank" rel="noopener"><i class="ic ic-siem"></i><span><b>Kibana</b><small>SIEM · MITRE</small></span></a>
+    <a class="app" href="https://ops.example.com" target="_blank" rel="noopener"><i class="ic ic-docker"></i><span><b>Portainer</b><small>contenedores</small></span></a>
+  </nav>
+  <span class="yo" id="yo"></span>
+</header>
+
+<main>
+  <section class="kpis">
+    <div class="kpi"><span>Eventos</span><b id="k-eventos">0</b><small>ataques registrados</small></div>
+    <div class="kpi"><span>IPs atacantes</span><b id="k-ips">0</b><small>direcciones únicas</small></div>
+    <div class="kpi"><span>Países</span><b id="k-paises">0</b><small>de origen</small></div>
+    <div class="kpi"><span>Credenciales</span><b id="k-creds">0</b><small>intentos capturados</small></div>
+    <div class="kpi"><span>Comandos</span><b id="k-cmds">0</b><small>ejecutados por atacantes</small></div>
+    <div class="kpi grave"><span>Ataques graves</span><b id="k-graves">0</b><small id="k-graves-d">severidad alta o crítica</small></div>
+  </section>
+
+  <section class="fila dos-uno">
+    <article class="panel"><h2>Mapa de ataques <em id="m-n"></em></h2><div id="mapa"></div></article>
+    <article class="panel"><h2>Sensores</h2><div id="sensores" class="sensores"></div></article>
+  </section>
+
+  <section class="fila">
+    <article class="panel ataques-p"><h2>Ataques detectados y explicados <em id="a-n"></em></h2>
+      <div class="sev-barra" id="sev-barra"></div>
+      <div id="ataques" class="ataques"></div>
+    </article>
+  </section>
+
+  <section class="fila dos-uno">
+    <article class="panel"><h2>Actividad por honeypot</h2><div id="serie" class="grafico"></div></article>
+    <article class="panel"><h2>Distribución</h2><div id="dona" class="grafico"></div></article>
+  </section>
+
+  <section class="fila">
+    <article class="panel"><h2>Flujo en vivo</h2>
+      <div class="tabla-env"><table id="feed"><thead><tr><th>Hora</th><th>Sensor</th><th>Origen</th><th>País</th><th>Ataque</th><th>Detalle</th></tr></thead><tbody></tbody></table></div>
+    </article>
+  </section>
+
+  <section class="tops" id="tops"></section>
+
+  <section class="fila">
+    <article class="panel"><h2>🧬 Malware y archivos capturados <em>las muestras llegan también al bot de Telegram</em></h2>
+      <div class="tabla-env"><table id="muestras"><thead><tr><th>Hora</th><th>Origen</th><th>Ataque</th><th>Hash SHA-256 / URL de descarga</th></tr></thead><tbody></tbody></table></div>
+    </article>
+  </section>
+
+  <section class="fila">
+    <article class="panel cf"><h2><span class="cf-logo">☁</span> Cloudflare · borde</h2>
+      <div class="kpis mini">
+        <div class="kpi"><span>Solicitudes</span><b id="cf-req">0</b></div>
+        <div class="kpi"><span>Amenazas</span><b id="cf-thr">0</b></div>
+        <div class="kpi"><span>Desde caché</span><b id="cf-cache">0</b></div>
+        <div class="kpi"><span>Datos servidos</span><b id="cf-bytes">0</b></div>
+      </div>
+      <div class="fila dos-uno sin-m"><div id="cf-serie" class="grafico"></div><div><h3>Países (borde)</h3><ol id="cf-paises" class="lista"></ol></div></div>
+      <h3>Últimos eventos de seguridad / Access</h3><div class="tabla-env"><table id="cf-ev"><thead><tr><th>Hora</th><th>Tipo</th><th>Acción</th><th>Origen</th><th>Destino</th></tr></thead><tbody></tbody></table></div>
+    </article>
+  </section>
+
+  <section class="fila">
+    <article class="panel"><h2>Servidor</h2><div id="host" class="host"></div></article>
+  </section>
+</main>
+<footer>Centinela · Acceso exclusivo del administrador · Toda actividad es monitoreada</footer>
+<div id="cajon" class="cajon" aria-hidden="true" role="dialog" aria-label="Detalle del origen">
+  <div class="cajon-fondo"></div>
+  <aside class="cajon-panel"><button class="cerrar" aria-label="Cerrar">✕</button><div id="cajon-c"></div></aside>
+</div>
+<script src="lib/echarts.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+---
+- name: Recrear cloudflared
+  community.docker.docker_compose_v2:
+    project_src: /opt/stacks/edge
+    state: present
+    recreate: always

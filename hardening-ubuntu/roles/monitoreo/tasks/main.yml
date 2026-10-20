@@ -1,0 +1,74 @@
+---
+# Monitoreo de la infraestructura: node-exporter (host) + Prometheus + Alertmanager + Grafana.
+# Alertas → vigía → Worker de Cloudflare → Telegram. Grafana en metrics. (detrás de Access).
+- name: Monitoreo | Directorios
+  ansible.builtin.file:
+    path: "{{ item.p }}"
+    state: directory
+    owner: "{{ item.o }}"
+    group: "{{ item.o }}"
+    mode: "{{ item.m }}"
+  loop:
+    - { p: /opt/stacks/monitoreo, o: 0, m: "0711" }
+    - { p: /opt/stacks/monitoreo/config, o: 0, m: "0755" }
+    - { p: /opt/stacks/monitoreo/secrets, o: 0, m: "0711" }
+    - { p: /opt/stacks/monitoreo/datos, o: 0, m: "0711" }
+    - { p: /opt/stacks/monitoreo/datos/prometheus, o: "{{ dockremap_subid_inicio + 65534 }}", m: "0700" }
+    - { p: /opt/stacks/monitoreo/datos/alertmanager, o: "{{ dockremap_subid_inicio + 65534 }}", m: "0700" }
+    - { p: /opt/stacks/monitoreo/datos/grafana, o: "{{ dockremap_subid_inicio + 472 }}", m: "0700" }
+    - { p: /var/lib/centinela, o: 0, m: "0755" }
+    - { p: /var/lib/centinela/textfile, o: 0, m: "0755" }
+
+- name: Monitoreo | Configuración de Prometheus y Alertmanager
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/opt/stacks/monitoreo/config/{{ item }}"
+    mode: "0644"
+  loop: [prometheus.yml, alertmanager.yml]
+  register: mon_conf
+
+- name: Monitoreo | Reglas de alerta
+  ansible.builtin.copy:
+    src: reglas.yml
+    dest: /opt/stacks/monitoreo/config/reglas.yml
+    mode: "0644"
+  register: mon_reglas
+
+- name: Monitoreo | Grafana (provisioning y dashboards)
+  ansible.builtin.copy:
+    src: "grafana/{{ item }}"
+    dest: /opt/stacks/monitoreo/grafana/
+    mode: preserve
+    directory_mode: "0755"
+  loop: [provisioning, dashboards]
+  register: mon_graf
+
+- name: Monitoreo | Secretos (token de alertas y admin de Grafana)
+  ansible.builtin.copy:
+    dest: "/opt/stacks/monitoreo/secrets/{{ item.n }}"
+    content: "{{ item.v }}"
+    owner: "{{ item.o }}"
+    group: "{{ item.o }}"
+    mode: "0400"
+  loop:
+    - { n: token, v: "{{ alertas_token }}", o: "{{ dockremap_subid_inicio + 65534 }}" }
+    - { n: grafana_admin, v: "{{ grafana_admin_password }}", o: "{{ dockremap_subid_inicio + 472 }}" }
+  loop_control:
+    label: "{{ item.n }}"
+  no_log: true
+  register: mon_sec
+
+- name: Monitoreo | compose.yml
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: /opt/stacks/monitoreo/compose.yml
+    mode: "0600"
+
+- name: Monitoreo | Levantar
+  community.docker.docker_compose_v2:
+    project_src: /opt/stacks/monitoreo
+    state: present
+    pull: missing
+    recreate: "{{ 'always' if (mon_conf.changed or mon_reglas.changed or mon_graf.changed or mon_sec.changed) else 'auto' }}"
+    wait: true
+    wait_timeout: 180

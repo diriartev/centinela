@@ -1,0 +1,15 @@
+{
+  "index_patterns": ["cloudflare-events*"],
+  "data_stream": {},
+  "priority": 500,
+  "template": {
+    "settings": { "number_of_replicas": 0, "index.lifecycle.name": "centinela-retencion" },
+    "mappings": { "dynamic": true, "properties": {
+      "@timestamp": {"type":"date"}, "cf.kind": {"type":"keyword"}, "cf.action": {"type":"keyword"}, "cf.source": {"type":"keyword"},
+      "cf.rule_id": {"type":"keyword"}, "cf.host": {"type":"keyword"}, "cf.path": {"type":"keyword"}, "cf.country": {"type":"keyword"},
+      "cf.user_agent": {"type":"keyword","ignore_above":1024}, "cf.ray": {"type":"keyword"}, "cf.user_email": {"type":"keyword"},
+      "cf.app": {"type":"keyword"}, "cf.allowed": {"type":"boolean"},
+      "source": { "properties": { "ip": {"type":"ip"}, "as": { "properties": { "number": {"type":"long"} } } } }
+    } }
+  }
+}

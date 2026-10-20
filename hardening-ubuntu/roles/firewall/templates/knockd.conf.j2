@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+# knockd escucha con libpcap ANTES del firewall: los puertos de la secuencia
+# no tienen que estar abiertos. La regla se borra sola a los {{ knock_tiempo_abierto }} s
+# (las conexiones ya establecidas siguen vivas).
+[options]
+    UseSyslog
+    Interface = {{ iface_servidor }}
+
+[abrirSSH]
+    sequence      = {{ knock_secuencia | join(',') }}
+    seq_timeout   = {{ knock_timeout_secuencia }}
+    tcpflags      = syn
+    start_command = /usr/sbin/ufw prepend allow proto tcp from %IP% to any port {{ ssh_puerto }}
+    cmd_timeout   = {{ knock_tiempo_abierto }}
+    stop_command  = /usr/sbin/ufw delete allow proto tcp from %IP% to any port {{ ssh_puerto }}

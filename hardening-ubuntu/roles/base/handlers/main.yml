@@ -1,0 +1,10 @@
+---
+- name: Reiniciar rsyslog
+  ansible.builtin.systemd:
+    name: rsyslog
+    state: restarted
+
+- name: Reiniciar postfix
+  ansible.builtin.systemd:
+    name: postfix
+    state: restarted

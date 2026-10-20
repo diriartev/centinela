@@ -1,0 +1,35 @@
+# {{ ansible_managed }}
+# Todas las alertas van al vigía (red interna "mon"), que las firma y las manda al bot de Telegram.
+route:
+  receiver: vigia
+  group_by: [alertname, nombre, mountpoint]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    # el vigía ya avisó al bot con el detalle; aquí solo se ven en Grafana
+    - matchers: [ 'aviso="vigia"' ]
+      receiver: solo-grafana
+    - matchers: [ 'severidad="critica"' ]
+      receiver: vigia
+      repeat_interval: 1h
+receivers:
+  - name: solo-grafana
+  - name: vigia
+    webhook_configs:
+      - url: "http://{{ ip_vigia_mon }}:9095/alertmanager"
+        send_resolved: true
+        max_alerts: 20
+        http_config:
+          authorization: { type: Bearer, credentials_file: /etc/alertmanager/token }
+inhibit_rules:
+  # si una alerta crítica está activa, no repetir su versión "alta"
+  - source_matchers: [ 'alertname="CPUCritica"' ]
+    target_matchers: [ 'alertname="CPUAlta"' ]
+  - source_matchers: [ 'alertname="RAMCritica"' ]
+    target_matchers: [ 'alertname="RAMAlta"' ]
+  - source_matchers: [ 'alertname="DiscoLleno"' ]
+    target_matchers: [ 'alertname="DiscoCasiLleno"' ]
+    equal: [mountpoint]
+  - source_matchers: [ 'alertname="ServidorSinMetricas"' ]
+    target_matchers: [ 'severidad="alta"' ]

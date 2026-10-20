@@ -1,0 +1,18 @@
+# Centinela · Kibana
+# Acceso: Kibana solo se alcanza por Cloudflare Access (Auth0 + MFA) y cloudflared valida el JWT en el origen.
+# Por eso el proveedor "anonymous" equivale a "entrar con tu sesión de Access": entra directo, en SOLO LECTURA.
+# Para administrar: https://insights.example.com/login?auth_provider_hint=admin (usuario admin propio).
+server.host: "0.0.0.0"
+server.shutdownTimeout: "5s"
+monitoring.ui.container.elasticsearch.enabled: true
+xpack.security.authc.selector.enabled: false
+xpack.security.authc.providers:
+  anonymous.access:
+    order: 0
+    description: "Entrar con Cloudflare Access"
+    credentials:
+      username: "centinela_visor"
+      password: "${KIBANA_VISOR_PASSWORD}"
+  basic.admin:
+    order: 1
+    description: "Administrador"

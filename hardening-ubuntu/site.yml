@@ -1,0 +1,134 @@
+---
+# ════════════════════════════════════════════════════════════════════
+#  Hardening de Ubuntu 22.04 como host de Docker (honeypot) + Portainer
+#  Uso:        ansible-playbook site.yml
+#  Por partes: --tags base,kernel,auth,ssh,auditoria,firewall,docker,portainer
+#  Simulacro:  ansible-playbook site.yml --check --diff
+# ════════════════════════════════════════════════════════════════════
+- name: Port knocking previo
+  ansible.builtin.import_playbook: tocar.yml
+
+- name: Hardening de Ubuntu (host de Docker para el honeypot)
+  hosts: honeypot
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Pre-flight | Verificar Ubuntu 22.04+
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "Ubuntu"
+          - ansible_distribution_version is version('22.04', '>=')
+        fail_msg: "Pensado para Ubuntu Server 22.04 o superior."
+      tags: [always]
+
+    - name: Pre-flight | Interfaz e IP de salida
+      ansible.builtin.set_fact:
+        iface_servidor: "{{ ansible_default_ipv4.interface }}"
+        ip_servidor: "{{ ansible_default_ipv4.address }}"
+        tiene_wifi: "{{ ansible_interfaces | select('match', '^wl') | list | length > 0 }}"
+        es_vm: "{{ ansible_virtualization_role | default('') == 'guest' }}"
+      tags: [always]
+
+    - name: Pre-flight | Rutas actuales (para no chocar con las redes de la institución)
+      # Se ignoran las rutas que crea el propio Docker (docker0 / br-*)
+      ansible.builtin.shell: set -o pipefail; ip -4 route show | grep -vE 'dev (docker0|br-)' || true
+      args:
+        executable: /bin/bash
+      register: rutas
+      changed_when: false
+      tags: [always]
+
+    - name: Pre-flight | El rango de Docker no debe chocar con redes existentes
+      ansible.builtin.assert:
+        that: "(docker_pool.split('.')[0:2] | join('.')) ~ '.' not in rutas.stdout"
+        fail_msg: "Ya hay rutas en {{ docker_pool }}. Cambia docker_pool en group_vars/all.yml."
+      tags: [always]
+
+    - name: Pre-flight | IP del equipo administrador (origen de esta sesión)
+      ansible.builtin.shell: echo "${SSH_CLIENT%% *}"
+      become: false
+      register: ip_admin_cmd
+      changed_when: false
+      tags: [always]
+
+    - name: Pre-flight | Resumen del host
+      ansible.builtin.debug:
+        msg:
+          - "Host {{ ansible_hostname }} · {{ ansible_distribution }} {{ ansible_distribution_version }} · kernel {{ ansible_kernel }}"
+          - "Interfaz {{ iface_servidor }} · IP {{ ip_servidor }} · VM: {{ es_vm }} ({{ ansible_virtualization_type | default('?') }}) · WiFi: {{ tiene_wifi }}"
+          - "RAM {{ ansible_memtotal_mb }} MB · CPUs {{ ansible_processor_vcpus }} · admin {{ admin_usuario }} desde {{ ip_admin_cmd.stdout }}"
+      tags: [always]
+
+    - name: Pre-flight | Guardar IP del admin
+      ansible.builtin.set_fact:
+        ip_admin: "{{ ip_admin_cmd.stdout | trim }}"
+      tags: [always]
+
+    # Mientras dure el despliegue, la revisión horaria de AIDE no corre (lo que cambie Ansible
+    # no es un intruso). Al terminar se acepta como nueva línea base y llega un resumen silencioso al bot.
+    - name: Pre-flight | Marcar despliegue en curso
+      ansible.builtin.shell: install -d -m 0700 /run/centinela && touch /run/centinela/despliegue
+      changed_when: false
+      when: not ansible_check_mode
+      tags: [always]
+
+  roles:
+    - { role: base,          tags: [base] }
+    - { role: kernel,        tags: [kernel] }
+    - { role: autenticacion, tags: [auth] }
+    - { role: ssh,           tags: [ssh] }
+    - { role: docker,        tags: [docker] }
+    - { role: firewall,      tags: [firewall] }
+    - { role: auditoria,     tags: [auditoria] }
+    - { role: portainer,     tags: [portainer] }
+    - { role: siem,          tags: [siem] }
+    - { role: honeypots,     tags: [honeypots] }
+    - { role: decoy,         tags: [decoy] }
+    - { role: panel,         tags: [panel] }
+    - { role: cfmetrics,     tags: [cfmetrics] }
+    - { role: monitoreo,     tags: [monitoreo] }
+    - { role: vigia,         tags: [vigia] }
+    - { role: edge,          tags: [edge] }
+
+  post_tasks:
+    - name: Cierre | Aplicar handlers pendientes
+      ansible.builtin.meta: flush_handlers
+      tags: [always]
+
+    - name: Cierre | Aceptar los cambios del despliegue en la línea base de AIDE
+      ansible.builtin.shell: |
+        [ -x /usr/local/sbin/centinela-integridad ] || exit 0
+        /usr/local/sbin/centinela-integridad aide --aceptar "despliegue Ansible ({{ ansible_run_tags | join(',') }})"
+      register: aide_aceptar
+      changed_when: false
+      failed_when: false
+      when: not ansible_check_mode
+      tags: [always]
+
+    - name: Cierre | Fin del despliegue
+      ansible.builtin.file:
+        path: /run/centinela/despliegue
+        state: absent
+      tags: [always]
+
+    - name: Cierre | ¿Hace falta reiniciar?
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_req
+      tags: [always]
+
+    - name: Cierre | Reiniciar (solo si se permitió)
+      ansible.builtin.reboot:
+        reboot_timeout: 900
+      when: reboot_req.stat.exists and reiniciar_si_hace_falta | bool
+      tags: [always]
+
+    - name: Cierre | Resumen
+      ansible.builtin.debug:
+        msg:
+          - "Hardening aplicado en {{ inventory_hostname }} ({{ ip_servidor }})"
+          - "SSH público: {{ 'CERRADO (Cloudflare / knock / redes_admin)' if cerrar_ssh_publico else 'abierto solo con llave + Fail2Ban' }}"
+          - "Portainer: ssh -L 9443:127.0.0.1:{{ portainer_puerto_local }} {{ admin_usuario }}@{{ ansible_host }}  →  https://localhost:9443"
+          - "Reinicio pendiente: {{ reboot_req.stat.exists }} (audit=1 en GRUB y kernel nuevo aplican al reiniciar)"
+      tags: [always]

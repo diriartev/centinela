@@ -1,0 +1,78 @@
+---
+# ════════════════════════════════════════════════════════════════════
+#  Lynis antes/después:
+#    ansible-playbook lynis.yml -e fase=antes     (ANTES del hardening)
+#    ansible-playbook lynis.yml -e fase=despues
+# ════════════════════════════════════════════════════════════════════
+- name: Port knocking previo
+  ansible.builtin.import_playbook: tocar.yml
+
+- name: Auditoría con Lynis
+  hosts: honeypot
+  become: true
+  gather_facts: false
+  vars:
+    fase: despues
+    reporte: /var/log/lynis-report.dat
+    linea_base: /var/lib/lynis-linea-base.txt
+  tasks:
+    - name: Lynis | Instalado
+      ansible.builtin.apt:
+        name: lynis
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Lynis | Auditoría completa (1-3 min)
+      ansible.builtin.command: lynis audit system --quick --no-colors
+      changed_when: false
+
+    - name: Lynis | Leer reporte
+      ansible.builtin.slurp:
+        src: "{{ reporte }}"
+      register: reporte_raw
+
+    - name: Lynis | Extraer índice, advertencias y sugerencias
+      ansible.builtin.set_fact:
+        indice: "{{ (txt | regex_search('hardening_index=(\\d+)', '\\1') | first) | int }}"
+        advertencias: "{{ txt | regex_findall('warning\\[\\]=([^|]+\\|[^|]+)') }}"
+        sugerencias: "{{ txt | regex_findall('suggestion\\[\\]=([^|]+\\|[^|]+)') }}"
+      vars:
+        txt: "{{ reporte_raw.content | b64decode }}"
+
+    - name: Lynis | Guardar línea base
+      ansible.builtin.copy:
+        dest: "{{ linea_base }}"
+        content: "{{ indice }}\n"
+        mode: "0600"
+      when: fase == "antes"
+
+    - name: Lynis | Leer línea base
+      ansible.builtin.slurp:
+        src: "{{ linea_base }}"
+      register: base_raw
+      failed_when: false
+
+    - name: Lynis | RESULTADO
+      ansible.builtin.debug:
+        msg:
+          - "Lynis hardening index ({{ fase }}): {{ indice }} / 100"
+          - "Línea base (antes):              {{ base }} / 100"
+          - "Mejora: {{ '%+d' | format(indice | int - base | int) }} puntos · Advertencias {{ advertencias | length }} · Sugerencias {{ sugerencias | length }}"
+      vars:
+        base: "{{ (base_raw.content | b64decode | trim) if base_raw.content is defined else indice }}"
+
+    - name: Lynis | Advertencias
+      ansible.builtin.debug:
+        var: advertencias
+      when: advertencias | length > 0
+
+    - name: Lynis | Sugerencias
+      ansible.builtin.debug:
+        var: sugerencias
+
+    - name: Lynis | Traer el reporte
+      ansible.builtin.fetch:
+        src: "{{ reporte }}"
+        dest: "{{ playbook_dir }}/reportes/lynis-{{ inventory_hostname }}-{{ fase }}.dat"
+        flat: true

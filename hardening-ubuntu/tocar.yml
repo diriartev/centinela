@@ -1,0 +1,15 @@
+---
+# Toca la puerta (port knocking) desde tu PC antes de conectar por SSH.
+- name: Port knocking previo
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Knock | Abrir SSH para esta IP (5 min)
+      ansible.builtin.command: "python3 {{ playbook_dir }}/../knocking/knock.py {{ hostvars[groups['honeypot'][0]].ansible_host }}"
+      changed_when: false
+
+    - name: Knock | Dar tiempo a knockd
+      ansible.builtin.pause:
+        seconds: 1

@@ -1,0 +1,234 @@
+---
+# ── auditd ─────────────────────────────────────────────────────────
+- name: Auditoría | auditd con tope de disco
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: '^{{ item.k }}\s*='
+    line: "{{ item.k }} = {{ item.v }}"
+  loop:
+    - { k: max_log_file,        v: 50 }
+    - { k: num_logs,            v: 10 }
+    - { k: max_log_file_action, v: ROTATE }
+    - { k: space_left_action,   v: SYSLOG }
+  loop_control:
+    label: "{{ item.k }}"
+  notify: Reiniciar auditd
+
+- name: Auditoría | Reglas (CIS Ubuntu + CIS Docker)
+  ansible.builtin.template:
+    src: 50-hardening.rules.j2
+    dest: /etc/audit/rules.d/50-hardening.rules
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Cargar reglas de auditoria
+
+- name: Auditoría | Carpeta de drop-ins de containerd
+  ansible.builtin.file:
+    path: /etc/systemd/system/containerd.service.d
+    state: directory
+    mode: "0755"
+
+- name: Auditoría | Vigilar el socket de containerd cuando ya existe (CIS Docker 1.1.x)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/containerd.service.d/50-auditoria.conf
+    mode: "0644"
+    content: |
+      # Gestionado por Ansible
+      [Service]
+      ExecStartPost=-/sbin/auditctl -w /run/containerd/containerd.sock -p wa -k docker
+  notify: Recargar systemd
+
+- name: Auditoría | auditd habilitado
+  ansible.builtin.systemd:
+    name: auditd
+    enabled: true
+    state: started
+
+- name: Auditoría | audit=1 desde el arranque (aplica al reiniciar)
+  ansible.builtin.lineinfile:
+    path: /etc/default/grub
+    regexp: '^GRUB_CMDLINE_LINUX="(?!.*audit=1)(.*)"$'
+    line: 'GRUB_CMDLINE_LINUX="\1 audit=1 audit_backlog_limit=8192"'
+    backrefs: true
+  notify: Actualizar grub
+
+# ── rkhunter ───────────────────────────────────────────────────────
+- name: Auditoría | rkhunter adaptado a Ubuntu
+  ansible.builtin.lineinfile:
+    path: /etc/rkhunter.conf
+    regexp: '^#?\s*{{ item.k }}='
+    line: "{{ item.k }}={{ item.v }}"
+  loop:
+    - { k: ALLOW_SSH_ROOT_USER, v: "no" }
+    - { k: PKGMGR,              v: DPKG }
+    - { k: UPDATE_MIRRORS,      v: "1" }
+    - { k: MIRRORS_MODE,        v: "0" }
+    - { k: WEB_CMD,             v: '""' }
+  loop_control:
+    label: "{{ item.k }}"
+
+- name: Auditoría | rkhunter diario y tras cada apt
+  ansible.builtin.lineinfile:
+    path: /etc/default/rkhunter
+    regexp: '^{{ item }}='
+    line: '{{ item }}="true"'
+  loop: [CRON_DAILY_RUN, APT_AUTOGEN]
+
+- name: Auditoría | Línea base de rkhunter
+  ansible.builtin.command: rkhunter --propupd --quiet
+  changed_when: false
+
+# ── AIDE ───────────────────────────────────────────────────────────
+# Sin estas exclusiones AIDE avisaría de miles de cambios diarios
+# (capas de Docker, índices de Elasticsearch, capturas del honeypot).
+- name: Auditoría | Exclusiones de AIDE para un host de Docker
+  ansible.builtin.copy:
+    dest: /etc/aide/aide.conf.d/99_hardening_docker
+    content: |
+      # Gestionado por Ansible
+      !/var/lib/docker
+      !/var/lib/containerd
+      !/opt/stacks/.*/data
+      !/var/log/journal
+      !/var/lib/fail2ban
+    mode: "0644"
+
+- name: Auditoría | ¿Existe la base de AIDE?
+  ansible.builtin.shell: test -f /var/lib/aide/aide.db || pgrep -x aide
+  register: aide_db
+  changed_when: false
+  failed_when: false
+
+- name: Auditoría | Crear base de AIDE en segundo plano (tarda varios minutos)
+  ansible.builtin.shell: >-
+    aideinit --yes --force &&
+    cp -f /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+  async: 3600
+  poll: 0
+  changed_when: true
+  when: aide_db.rc != 0
+
+# ── Integridad con aviso (AIDE enfocado cada hora + auditd en tiempo real → Grafana y Telegram) ──
+- name: Integridad | Carpetas
+  ansible.builtin.file:
+    path: "{{ item.p }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.m }}"
+  loop:
+    - { p: /var/lib/centinela/aide, m: "0700" }
+    - { p: /var/lib/centinela/integridad, m: "0700" }
+    - { p: /var/lib/centinela/textfile, m: "0755" }
+  loop_control:
+    label: "{{ item.p }}"
+
+- name: Integridad | Configuración de AIDE enfocada
+  ansible.builtin.copy:
+    src: aide-centinela.conf
+    dest: /etc/aide/centinela.conf
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Integridad | Script de revisión (AIDE + auditd)
+  ansible.builtin.copy:
+    src: centinela-integridad.py
+    dest: /usr/local/sbin/centinela-integridad
+    owner: root
+    group: root
+    mode: "0750"
+
+# El AIDE diario de Debian revisaba 120 000 archivos (10 min) y mandaba el reporte a un correo
+# local que nadie lee. Se desvía (dpkg-divert: sobrevive a las actualizaciones del paquete).
+- name: Integridad | Desactivar el AIDE diario de Debian
+  ansible.builtin.command: dpkg-divert --local --rename --divert /etc/cron.daily/aide.desactivado-centinela --add /etc/cron.daily/aide
+  register: divert
+  changed_when: "'Adding' in divert.stdout"
+
+- name: Integridad | Servicio y temporizador (cada hora)
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.n }}"
+    mode: "0644"
+    content: "{{ item.c }}"
+  loop:
+    - n: centinela-integridad.service
+      c: |
+        [Unit]
+        Description=Centinela - integridad de archivos (AIDE)
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/centinela-integridad aide
+        Nice=19
+        IOSchedulingClass=idle
+        ProtectSystem=full
+        PrivateTmp=true
+        NoNewPrivileges=true
+        TimeoutStartSec=30min
+    - n: centinela-integridad.timer
+      c: |
+        [Unit]
+        Description=Centinela - integridad cada hora
+        [Timer]
+        OnBootSec=10min
+        OnUnitActiveSec=1h
+        RandomizedDelaySec=5min
+        Persistent=true
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.n }}"
+
+- name: Integridad | Activar temporizador
+  ansible.builtin.systemd:
+    name: centinela-integridad.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# ── USBGuard ───────────────────────────────────────────────────────
+- name: Auditoría | USBGuard
+  when: usbguard_activo | bool and not es_vm | bool
+  block:
+    - name: Auditoría | Instalar USBGuard
+      ansible.builtin.apt:
+        name: usbguard
+        state: present
+
+    - name: Auditoría | ¿Ya hay política?
+      ansible.builtin.stat:
+        path: /etc/usbguard/rules.conf
+      register: usb_reglas
+
+    # Política = dispositivos conectados AHORA + cualquier teclado/ratón
+    # (clase 03) y hub (clase 09): en el datacenter se puede necesitar un
+    # teclado de emergencia. Memorias USB nuevas quedan bloqueadas.
+    - name: Auditoría | Generar política
+      ansible.builtin.shell: |
+        set -o pipefail
+        { usbguard generate-policy
+          echo 'allow with-interface equals { 03:*:* }'
+          echo 'allow with-interface equals { 09:00:* }'
+        } > /etc/usbguard/rules.conf
+      args:
+        executable: /bin/bash
+      when: not usb_reglas.stat.exists or usb_reglas.stat.size == 0
+      changed_when: true
+
+    - name: Auditoría | Permisos de la política
+      ansible.builtin.file:
+        path: /etc/usbguard/rules.conf
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Auditoría | USBGuard activo
+      ansible.builtin.systemd:
+        name: usbguard
+        enabled: true
+        state: started
+  rescue:
+    - name: Auditoría | USBGuard no se pudo activar
+      ansible.builtin.debug:
+        msg: "USBGuard no se activó; el bloqueo de usb-storage por modprobe sigue vigente."

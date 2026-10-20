@@ -1,0 +1,54 @@
+# {{ ansible_managed }}
+# Vigía: lee Elasticsearch (solo lectura) y el estado del host, y manda alertas firmadas al
+# Worker de Cloudflare (bot de Telegram). Salida a internet SOLO hacia Cloudflare (firewall).
+name: vigia
+services:
+  vigia:
+    build: { context: ./build }
+    image: centinela/vigia:1.0
+    container_name: vigia
+    restart: unless-stopped
+    environment:
+      - ES_PASSWORD=${ES_PASSWORD}
+      - ES_URL=https://{{ ip_es }}:9200
+      - RELAY_URL=https://hooks.{{ cf_dominio }}
+      - CONSOLA_URL=https://console.{{ cf_dominio }}
+      - GRAFANA_URL=https://metrics.{{ cf_dominio }}
+      - ESCUCHAR_ALERTAS={{ ip_vigia_mon }}:9095
+    secrets: [relay_key, alertas_token]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - /opt/stacks/siem/certs/ca.crt:/certs/ca.crt:ro
+      - ./estado:/estado
+      - ./cuarentena:/cuarentena
+      - /opt/stacks/panel/status:/host:ro
+      - /opt/stacks/decoy/log/muestras:/muestras/web:ro
+      - /opt/stacks/decoy/sensores/h0neytr4p/payloads:/muestras/h0neytr4p:ro
+      - /opt/stacks/decoy/sensores/log4pot/payloads:/muestras/log4pot:ro
+      - /opt/stacks/honeypots/data/cowrie/downloads:/muestras/cowrie:ro
+      - /opt/stacks/honeypots/data/dionaea/binaries:/muestras/dionaea:ro
+      - /opt/stacks/honeypots/data/adbhoney/downloads:/muestras/adbhoney:ro
+    # Sano = guardó su estado en los últimos 3 min (el ciclo es de 1 min)
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,time,sys;sys.exit(0 if time.time()-os.path.getmtime('/estado/vigia.json')<180 else 1)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+    networks:
+      edge: { ipv4_address: {{ ip_vigia_edge }} }
+      data: { ipv4_address: {{ ip_vigia_data }} }
+      mon: { ipv4_address: {{ ip_vigia_mon }} }
+    logging: { driver: local, options: { max-size: "5m", max-file: "3" } }
+secrets:
+  relay_key: { file: ./secrets/relay_key }
+  alertas_token: { file: ./secrets/alertas_token }
+networks:
+  edge: { external: true, name: {{ red_edge.nombre }} }
+  data: { external: true, name: {{ red_data.nombre }} }
+  mon: { external: true, name: {{ red_mon.nombre }} }

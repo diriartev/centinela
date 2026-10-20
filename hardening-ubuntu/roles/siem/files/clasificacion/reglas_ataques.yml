@@ -1,0 +1,592 @@
+# Centinela · Reglas de clasificación de ataques
+# ------------------------------------------------
+# Cada evento de los honeypots se compara contra estas reglas en el pipeline de ingesta de
+# Elasticsearch. Gana la regla de mayor severidad y el evento queda con:
+#   ataque.*  (nombre, categoría, severidad, explicación, recomendación, CVE)
+#   threat.*  (MITRE ATT&CK: táctica y técnica, formato ECS)
+#
+# Cómo se compara (todo en minúsculas, la URL ya llega decodificada):
+#   en:         dónde buscar: url, cuerpo, cmd, ua, cabeceras, accion (por defecto: en todo)
+#   cualquiera: basta con que aparezca UNO de estos textos
+#   grupos:     lista de listas; de CADA grupo debe aparecer al menos uno
+#   campo:      el evento trae ese campo (password, honeytoken, http_404)
+#   honeypots:  solo para esos sensores (web, cowrie, dionaea, …)
+#   puertos:    solo para esos puertos de destino
+# Severidad: 1 baja · 2 media · 3 alta · 4 crítica
+#
+# Además se cargan automáticamente las ~40 trampas de CVEs de h0neytr4p (T-Pot).
+# Después de editar: python3 generar_pipeline.py   y   ansible-playbook site.yml --tags siem
+
+reglas:
+
+# ── Uso de señuelos (máxima confianza: nadie legítimo conoce estos datos) ──────────────
+- id: honeytoken
+  nombre: Uso de credencial señuelo (honeytoken)
+  categoria: Uso de secretos robados
+  severidad: 4
+  tactica: Credential Access
+  tecnica_id: T1552.001
+  tecnica: "Unsecured Credentials: Credentials In Files"
+  campo: honeytoken
+  explicacion: >-
+    El atacante usó una clave, token o contraseña que solo existe en los archivos falsos que dejamos
+    expuestos a propósito (.env, configuración). Significa que alguien leyó el archivo y ahora intenta
+    entrar con lo que robó: es un atacante interesado, no un simple escáner.
+  recomendacion: Revisar todo lo que hizo esa IP; es actividad dirigida. Ningún dato real está comprometido.
+
+# ── Malware, descargas y ejecución ───────────────────────────────────────────────────
+- id: dropper
+  nombre: Descarga y ejecución de malware (dropper)
+  categoria: Descarga de malware
+  severidad: 4
+  tactica: Command and Control
+  tecnica_id: T1105
+  tecnica: Ingress Tool Transfer
+  en: [cmd, cuerpo, url, cabeceras]
+  grupos: [["wget", "curl", "tftp", "ftpget", "/dev/tcp", "lwp-download", "fetch "], ["http", "ftp://", "tftp", "/dev/tcp"]]
+  explicacion: >-
+    El atacante intenta que el servidor descargue un programa o script desde internet y lo ejecute.
+    Es la forma típica de instalar bots (Mirai, Gafgyt), mineros o puertas traseras. La URL del archivo
+    queda guardada y el bot de Telegram intenta capturar la muestra.
+  recomendacion: Consultar el hash de la muestra en VirusTotal/MalwareBazaar y bloquear el dominio o la IP de origen.
+
+- id: mineria
+  nombre: Minería de criptomonedas
+  categoria: Abuso de recursos
+  severidad: 4
+  tactica: Impact
+  tecnica_id: T1496
+  tecnica: Resource Hijacking
+  en: [cmd, cuerpo, url]
+  cualquiera: ["xmrig", "stratum+tcp", "stratum+ssl", "minerd", "cpuminer", "nicehash", "monero", "xmr.", "c3pool", "supportxmr", "kdevtmpfsi", "kinsing"]
+  explicacion: >-
+    Intento de instalar un minero de criptomonedas (casi siempre Monero). El atacante quiere usar la CPU
+    del servidor para ganar dinero; es una de las motivaciones más comunes de los ataques automáticos.
+  recomendacion: Bloquear los pools de minería en el firewall de salida (en nuestra infra ya no hay salida).
+
+- id: botnet-iot
+  nombre: Infección de botnet IoT (Mirai y variantes)
+  categoria: Botnet
+  severidad: 4
+  tactica: Execution
+  tecnica_id: T1059.004
+  tecnica: "Command and Scripting Interpreter: Unix Shell"
+  en: [cmd, cuerpo, url]
+  cualquiera: ["/bin/busybox", "mirai", "mozi", "gafgyt", "bashlite", ".arm7", ".mips", ".mpsl", ".x86_64", "tsunami", "hajime", "okiru", "sora.", "condi"]
+  explicacion: >-
+    Patrón clásico de botnets de dispositivos IoT: prueban si el equipo tiene BusyBox, descargan una versión
+    del bot para cada arquitectura (arm, mips, x86) y lo ejecutan. Los equipos infectados se usan para
+    ataques DDoS. Es tráfico 100% automatizado.
+  recomendacion: Nada que hacer en nuestra infra; útil como inteligencia (IPs y URLs de la botnet).
+
+- id: webshell
+  nombre: Subida o uso de webshell
+  categoria: Persistencia
+  severidad: 4
+  tactica: Persistence
+  tecnica_id: T1505.003
+  tecnica: "Server Software Component: Web Shell"
+  en: [url, cuerpo]
+  cualquiera: ["eval(", "base64_decode(", "system($_", "shell_exec(", "passthru(", "assert($_", "<?php", "c99.php", "r57.php", "wso.php", "alfa.php", "cmd.jsp", "cmd.aspx", "?cmd=", "&cmd="]
+  explicacion: >-
+    El atacante intenta subir o usar una "webshell": un archivo (PHP, JSP, ASPX) que le permite ejecutar
+    comandos en el servidor desde el navegador. Si lo lograra, tendría control remoto permanente.
+  recomendacion: En un servidor real, revisar los directorios subibles y bloquear la ejecución de scripts en ellos.
+
+- id: comando-remoto
+  nombre: Inyección de comandos del sistema
+  categoria: Ejecución de código
+  severidad: 3
+  tactica: Execution
+  tecnica_id: T1059
+  tecnica: Command and Scripting Interpreter
+  honeypots: [web]
+  en: [url, cuerpo, cabeceras]
+  cualquiera: [";id;", ";id ", "$(id)", "`id`", ";uname", "$(uname", "|uname", ";cat /etc/passwd", "&&cat ", ";ls -la", "${ifs}", "$ifs", "nc -e", "/bin/sh -c", "sh -c ", "bash -c", "cmd.exe", "powershell"]
+  explicacion: >-
+    Se envía un comando de sistema dentro de un parámetro web esperando que la aplicación lo ejecute
+    (inyección de comandos / RCE). Es como "colarle" una orden al servidor en un formulario o en la URL.
+  recomendacion: Validar y escapar siempre la entrada; nunca pasar parámetros del usuario a la consola.
+
+# ── Explotación de vulnerabilidades conocidas (CVE) ───────────────────────────────────
+- id: log4shell
+  nombre: Log4Shell
+  categoria: Explotación de vulnerabilidad
+  severidad: 4
+  cve: CVE-2021-44228
+  tactica: Initial Access
+  tecnica_id: T1190
+  tecnica: Exploit Public-Facing Application
+  cualquiera: ["${jndi:", "jndi:ldap", "jndi:rmi", "jndi:dns", "${lower:", "${upper:", "${::-j}", "${env:", "${sys:"]
+  explicacion: >-
+    Explotación de Log4Shell, la vulnerabilidad de Java (Log4j) que en 2021 afectó a medio internet.
+    El atacante mete el texto "${jndi:...}" en cabeceras o parámetros: si el servidor lo registra con
+    Log4j vulnerable, se conecta a la máquina del atacante y ejecuta su código.
+  recomendacion: Actualizar Log4j a 2.17+; en nuestra infra no hay Java expuesto (es un señuelo).
+
+- id: spring4shell
+  nombre: Spring4Shell / Spring Cloud RCE
+  categoria: Explotación de vulnerabilidad
+  severidad: 4
+  cve: CVE-2022-22965
+  tactica: Initial Access
+  tecnica_id: T1190
+  tecnica: Exploit Public-Facing Application
+  en: [url, cuerpo]
+  cualquiera: ["class.module.classloader", "spring.cloud.function.routing-expression", "class.classloader"]
+  explicacion: >-
+    Intento de explotar Spring4Shell o Spring Cloud Function: vulnerabilidades del framework Java Spring
+    que permiten escribir un archivo malicioso o ejecutar código enviando parámetros especiales.
+  recomendacion: Actualizar Spring Framework/Cloud Function a versiones corregidas.
+
+- id: phpunit-rce
+  nombre: RCE en PHPUnit (eval-stdin.php)
+  categoria: Explotación de vulnerabilidad
+  severidad: 4
+  cve: CVE-2017-9841
+  tactica: Initial Access
+  tecnica_id: T1190
+  tecnica: Exploit Public-Facing Application
+  en: [url]
+  cualquiera: ["eval-stdin.php"]
+  explicacion: >-
+    Busca el archivo eval-stdin.php de PHPUnit, que en versiones viejas ejecuta cualquier código PHP que
+    se le envíe. Muchos sitios lo dejan publicado por error dentro de la carpeta "vendor".
+  recomendacion: Nunca publicar la carpeta vendor/ en el servidor web.
+
+- id: thinkphp-rce
+  nombre: RCE en ThinkPHP
+  categoria: Explotación de vulnerabilidad
+  severidad: 3
+  cve: CVE-2018-20062
+  tactica: Initial Access
+  tecnica_id: T1190
+  tecnica: Exploit Public-Facing Application
+  en: [url, cuerpo]
+  cualquiera: ["invokefunction", "think\\app", "call_user_func_array", "s=/index/\\think"]
+  explicacion: >-
+    Ataque contra el framework chino ThinkPHP: una ruta especial permite llamar funciones internas de PHP
+    y ejecutar comandos. Lo usan mucho las botnets para infectar servidores web.
+  recomendacion: Actualizar ThinkPHP; bloquear rutas con "invokefunction" en el WAF.
+
+- id: path-traversal
+  nombre: Recorrido de directorios (path traversal / LFI)
+  categoria: Explotación de vulnerabilidad
+  severidad: 3
+  tactica: Discovery
+  tecnica_id: T1083
+  tecnica: File and Directory Discovery
+  honeypots: [web]
+  en: [url, cuerpo]
+  cualquiera: ["../", "..\\", "%2e%2e", "/etc/passwd", "/etc/shadow", "win.ini", "boot.ini", "/proc/self/environ", "php://filter", "php://input", "file:///"]
+  explicacion: >-
+    El atacante usa "../" o rutas como /etc/passwd para salirse de la carpeta web y leer archivos del
+    sistema (contraseñas, configuración). Se llama path traversal o inclusión local de archivos (LFI).
+  recomendacion: Normalizar rutas y no construir nombres de archivo con datos del usuario.
+
+- id: apache-traversal
+  nombre: Path traversal en Apache 2.4.49/50
+  categoria: Explotación de vulnerabilidad
+  severidad: 4
+  cve: CVE-2021-41773
+  tactica: Initial Access
+  tecnica_id: T1190
+  tecnica: Exploit Public-Facing Application
+  en: [url]
+  cualquiera: ["/cgi-bin/.%2e/", "/icons/.%2e/", "/cgi-bin/../../", "/.%%32%65/", "%%32%65"]
+  explicacion: >-
+    Vulnerabilidad de Apache 2.4.49/2.4.50: con "/.%2e/" se escapa del directorio web y, si CGI está
+    activo, se ejecutan comandos. Muy escaneada desde 2021.
+  recomendacion: Actualizar Apache a 2.4.51 o superior.
+
+- id: sqli
+  nombre: Inyección SQL
+  categoria: Explotación de vulnerabilidad
+  severidad: 3
+  tactica: Initial Access
+  tecnica_id: T1190
+  tecnica: Exploit Public-Facing Application
+  honeypots: [web]
+  en: [url, cuerpo]
+  cualquiera: ["union select", "union all select", "' or '1'='1", "\" or \"1\"=\"1", "or 1=1", "sleep(", "benchmark(", "information_schema", "waitfor delay", "extractvalue(", "updatexml(", "xp_cmdshell", "' and 1=", "pg_sleep"]
+  explicacion: >-
+    Inyección SQL: el atacante mete código de base de datos en un campo o parámetro para saltarse el login,
+    leer tablas completas o borrar datos. Es una de las vulnerabilidades web más antiguas y comunes.
+  recomendacion: Usar consultas parametrizadas; nunca concatenar texto del usuario en SQL.
+
+- id: xss
+  nombre: Cross-Site Scripting (XSS)
+  categoria: Explotación de vulnerabilidad
+  severidad: 2
+  tactica: Initial Access
+  tecnica_id: T1189
+  tecnica: Drive-by Compromise
+  honeypots: [web]
+  en: [url, cuerpo]
+  cualquiera: ["<script", "javascript:", "onerror=", "onload=", "alert(", "document.cookie", "<svg/onload", "<img src=x"]
+  explicacion: >-
+    Intento de inyectar JavaScript en la página para que se ejecute en el navegador de otros usuarios
+    (robar sesiones, redirigir a sitios falsos). Suele ser un escáner probando si la web refleja lo que recibe.
+  recomendacion: Escapar la salida HTML y usar Content-Security-Policy.
+
+- id: ssrf-metadata
+  nombre: SSRF hacia metadatos de la nube
+  categoria: Explotación de vulnerabilidad
+  severidad: 3
+  tactica: Credential Access
+  tecnica_id: T1552.005
+  tecnica: "Unsecured Credentials: Cloud Instance Metadata API"
+  en: [url, cuerpo, cabeceras]
+  cualquiera: ["169.254.169.254", "metadata.google.internal", "/latest/meta-data", "100.100.100.200", "metadata/instance"]
+  explicacion: >-
+    El atacante intenta que el servidor consulte la dirección interna de metadatos de AWS/GCP/Azure, donde
+    viven credenciales temporales de la nube. Si funcionara, se llevaría llaves de la cuenta cloud.
+  recomendacion: Usar IMDSv2 en AWS y filtrar peticiones salientes de las aplicaciones.
+
+- id: citrix-cve
+  nombre: Citrix ADC / Gateway (Shitrix)
+  categoria: Explotación de vulnerabilidad
+  severidad: 4
+  cve: CVE-2019-19781
+  tactica: Initial Access
+  tecnica_id: T1190
+  tecnica: Exploit Public-Facing Application
+  en: [url]
+  cualquiera: ["/vpns/", "/vpn/../", "/vpn/../vpns", "newbm.pl", "/vpns/cfg/smb.conf"]
+  explicacion: >-
+    Ataque contra el VPN de Citrix (NetScaler). La falla CVE-2019-19781 permite, con un "../", escribir
+    plantillas en el equipo y ejecutar comandos sin contraseña. Se usó en ataques de ransomware reales.
+  recomendacion: Parchear Citrix ADC; nuestro "vpn." es un sensor que imita el portal.
+
+- id: vpn-appliance
+  nombre: Explotación de VPN / firewall corporativo
+  categoria: Explotación de vulnerabilidad
+  severidad: 4
+  tactica: Initial Access
+  tecnica_id: T1190
+  tecnica: Exploit Public-Facing Application
+  en: [url]
+  cualquiera: ["/remote/fgt_lang", "/dana-na/", "/dana-cached/", "/tmui/login.jsp", "/mgmt/tm/util/bash", "/+cscoe+/", "/+cscot+/", "/global-protect/", "/ssl-vpn/", "/api/fabric/device/status", "/remote/logincheck", "/owa/auth/", "/autodiscover/autodiscover.json", "/ecp/", "/mifs/", "/ui/vropspluginui/"]
+  explicacion: >-
+    Prueba de fallas en VPNs y equipos de borde (Fortinet, Pulse/Ivanti, F5 BIG-IP, Cisco ASA, Palo Alto,
+    Exchange, VMware). Son la puerta de entrada favorita de grupos de ransomware y APT porque dan acceso
+    directo a la red interna de una empresa.
+  recomendacion: Mantener parcheados los equipos de borde y no publicar sus paneles de administración.
+
+- id: iot-router
+  nombre: Explotación de router / cámara IoT
+  categoria: Explotación de vulnerabilidad
+  severidad: 3
+  tactica: Initial Access
+  tecnica_id: T1190
+  tecnica: Exploit Public-Facing Application
+  en: [url, cuerpo]
+  cualquiera: ["/boaform/", "/gponform/", "/hnap1", "/cgi-bin/luci", "/setup.cgi", "/shell?", "/goform/", "/tmunblock.cgi", "/picsdesc.xml", "/ctrlt/devicetest", "/userrpm/", "/cgi-bin/mainfunction.cgi", "/language/swedish", "/sdk/weblanguage", "/onvif/", "/cgi-bin/nobody"]
+  explicacion: >-
+    Ataque contra routers, cámaras y equipos domésticos (Huawei, D-Link, TP-Link, Hikvision, GPON…).
+    Las botnets escanean internet completo buscando estos equipos para sumarlos a su red de ataques DDoS.
+  recomendacion: Cambiar contraseñas por defecto y actualizar el firmware de los equipos IoT.
+
+- id: docker-k8s-api
+  nombre: Búsqueda de API de Docker / Kubernetes expuesta
+  categoria: Explotación de vulnerabilidad
+  severidad: 3
+  tactica: Execution
+  tecnica_id: T1610
+  tecnica: Deploy Container
+  en: [url]
+  cualquiera: ["/containers/json", "/containers/create", "/v1.24/", "/v1.40/", "/images/create", "/api/v1/pods", "/apis/apps/v1", "/version?", "/kubelet", "/api/v1/namespaces"]
+  explicacion: >-
+    El atacante busca la API de Docker o Kubernetes abierta sin contraseña. Si existe, crea un contenedor
+    con acceso al servidor anfitrión y lo toma por completo (muy usado por mineros como TeamTNT).
+  recomendacion: Nunca exponer el socket de Docker ni la API de Kubernetes a internet.
+
+- id: deserializacion
+  nombre: Deserialización insegura
+  categoria: Explotación de vulnerabilidad
+  severidad: 3
+  tactica: Initial Access
+  tecnica_id: T1190
+  tecnica: Exploit Public-Facing Application
+  en: [url, cuerpo, cabeceras]
+  cualquiera: ["ro0ab", "aced0005", "o:8:\"", "o:4:\"", "__wakeup", "ysoserial", "java.lang.runtime", "objectinputstream", "%24%7b", "rememberme=deleteme"]
+  explicacion: >-
+    Se envían objetos serializados (Java, PHP) manipulados. Al "reconstruirlos", la aplicación vulnerable
+    termina ejecutando código del atacante.
+  recomendacion: No deserializar datos que vengan del usuario; usar formatos simples como JSON.
+
+- id: ognl-confluence
+  nombre: Inyección OGNL (Confluence / Struts)
+  categoria: Explotación de vulnerabilidad
+  severidad: 4
+  cve: CVE-2022-26134
+  tactica: Initial Access
+  tecnica_id: T1190
+  tecnica: Exploit Public-Facing Application
+  en: [url, cuerpo, cabeceras]
+  cualquiera: ["%{(", "${(#", "@java.lang.runtime@", "ognl", "#_memberaccess", "/struts2", ".action?"]
+  explicacion: >-
+    Inyección de expresiones OGNL usada contra Atlassian Confluence y Apache Struts (la falla de Equifax).
+    Permite ejecutar comandos del sistema con una sola petición.
+  recomendacion: Actualizar Confluence/Struts; bloquear "${" y "%{" en el WAF.
+
+# ── Robo de secretos y reconocimiento de archivos sensibles ───────────────────────────
+- id: secretos-expuestos
+  nombre: Búsqueda de secretos y configuración expuesta
+  categoria: Exposición de secretos
+  severidad: 3
+  tactica: Credential Access
+  tecnica_id: T1552.001
+  tecnica: "Unsecured Credentials: Credentials In Files"
+  en: [url]
+  cualquiera: ["/.env", "/.git/", "/.aws/credentials", "/.ssh/", "id_rsa", "/config.json", "/wp-config.php", "/configuration.php", "/.docker/config.json", "/.npmrc", "/.svn/", "/.ds_store", "/settings.py", "/appsettings.json", "/application.yml", "/credentials", "/.htpasswd", "/web.config", "/phpinfo", "/info.php", "/.vscode/sftp.json", "/sftp-config.json"]
+  explicacion: >-
+    Búsqueda de archivos que los desarrolladores dejan publicados por error: .env, .git, llaves SSH,
+    credenciales de AWS o la configuración de WordPress. Un solo archivo así puede entregar las contraseñas
+    de la base de datos o de la nube. Es lo más buscado en internet hoy.
+  recomendacion: Nunca desplegar .env/.git en la carpeta pública; rotar cualquier secreto que haya quedado expuesto.
+
+- id: backups
+  nombre: Búsqueda de copias de seguridad
+  categoria: Exposición de secretos
+  severidad: 2
+  tactica: Collection
+  tecnica_id: T1530
+  tecnica: Data from Cloud Storage
+  en: [url]
+  cualquiera: [".sql", ".bak", ".zip", ".tar.gz", ".tgz", ".rar", ".7z", ".old", ".swp", "/backup", "/dump", "~"]
+  honeypots: [web]
+  explicacion: >-
+    Prueba nombres típicos de respaldos (backup.zip, db.sql, sitio.tar.gz). Si alguno existe, el atacante
+    se lleva la base de datos o el código fuente completos sin necesidad de "hackear" nada.
+  recomendacion: Guardar los respaldos fuera de la carpeta web y cifrados.
+
+- id: actuator
+  nombre: Endpoints de diagnóstico expuestos (Actuator, debug)
+  categoria: Exposición de secretos
+  severidad: 2
+  tactica: Discovery
+  tecnica_id: T1082
+  tecnica: System Information Discovery
+  en: [url]
+  cualquiera: ["/actuator", "/server-status", "/server-info", "/debug/", "/_profiler", "/console", "/jolokia", "/telescope", "/__debug__", "/elmah.axd", "/trace.axd", "/metrics", "/swagger", "/api-docs", "/graphql"]
+  explicacion: >-
+    Busca páginas internas de diagnóstico (Spring Actuator, Apache server-status, consolas de debug, Swagger).
+    Revelan variables de entorno, rutas internas y a veces contraseñas, o permiten ejecutar código.
+  recomendacion: Desactivar o proteger con autenticación los endpoints de diagnóstico en producción.
+
+# ── Paneles de administración y credenciales ──────────────────────────────────────────
+- id: wordpress
+  nombre: Ataque a WordPress
+  categoria: Acceso a credenciales
+  severidad: 2
+  tactica: Credential Access
+  tecnica_id: T1110.001
+  tecnica: "Brute Force: Password Guessing"
+  en: [url]
+  cualquiera: ["/wp-login.php", "/xmlrpc.php", "/wp-admin", "/wp-json/wp/v2/users", "/?author=", "/wp-content/plugins/", "/wp-includes/", "/wlwmanifest.xml"]
+  explicacion: >-
+    Enumeración de usuarios y prueba de contraseñas contra WordPress (wp-login, xmlrpc), o búsqueda de
+    plugins vulnerables. WordPress mueve el 40% de la web, así que es el objetivo número uno de los bots.
+  recomendacion: Doble factor en WordPress, limitar intentos y desactivar xmlrpc.php si no se usa.
+
+- id: panel-admin
+  nombre: Búsqueda de paneles de administración
+  categoria: Reconocimiento
+  severidad: 2
+  tactica: Reconnaissance
+  tecnica_id: T1595.003
+  tecnica: "Active Scanning: Wordlist Scanning"
+  en: [url]
+  cualquiera: ["/phpmyadmin", "/pma", "/myadmin", "/adminer", "/manager/html", "/admin", "/administrator", "/cpanel", "/webmail", "/solr/", "/jenkins", "/grafana", "/kibana", "/portainer", "/zabbix", "/nagios", "/login.action", "/user/login"]
+  explicacion: >-
+    Recorre rutas de paneles conocidos (phpMyAdmin, Tomcat, Jenkins, cPanel…) para encontrar dónde
+    intentar contraseñas o explotar fallas. Es reconocimiento antes del ataque.
+  recomendacion: No publicar paneles de administración; ponerlos detrás de VPN o Zero Trust (como nuestra consola).
+
+- id: fuerza-bruta
+  nombre: Fuerza bruta de contraseñas
+  categoria: Acceso a credenciales
+  severidad: 2
+  tactica: Credential Access
+  tecnica_id: T1110.001
+  tecnica: "Brute Force: Password Guessing"
+  campo: password
+  explicacion: >-
+    El atacante prueba combinaciones de usuario y contraseña (admin/admin, root/123456…) esperando que
+    alguna funcione. Las contraseñas probadas quedan registradas: son las que los bots usan en todo internet.
+  recomendacion: Contraseñas largas y únicas, doble factor y bloqueo tras varios intentos fallidos.
+
+- id: login-exitoso-honeypot
+  nombre: Acceso conseguido en el honeypot SSH/Telnet
+  categoria: Acceso inicial
+  severidad: 4
+  tactica: Initial Access
+  tecnica_id: T1078
+  tecnica: Valid Accounts
+  honeypots: [cowrie]
+  en: [accion]
+  cualquiera: ["cowrie.login.success"]
+  explicacion: >-
+    El atacante "adivinó" una contraseña y entró a la terminal falsa de Cowrie. Desde aquí todo lo que
+    escriba queda grabado: así se ve qué hace un intruso real después de entrar.
+  recomendacion: Ver la sesión completa en Kibana (comandos y archivos descargados).
+
+# ── Comportamiento después de entrar (Cowrie / ADB) ───────────────────────────────────
+- id: persistencia-ssh
+  nombre: Persistencia con llave SSH o cron
+  categoria: Persistencia
+  severidad: 4
+  tactica: Persistence
+  tecnica_id: T1098.004
+  tecnica: "Account Manipulation: SSH Authorized Keys"
+  en: [cmd, cuerpo]
+  cualquiera: ["authorized_keys", "crontab", "/etc/cron", "/etc/rc.local", "systemctl enable", ".bashrc", "useradd", "passwd root", "chpasswd"]
+  explicacion: >-
+    El intruso deja una forma de volver: agrega su llave SSH, crea una tarea programada o un usuario nuevo.
+    Así conserva el acceso aunque se cambie la contraseña.
+  recomendacion: Vigilar cambios en authorized_keys, cron y usuarios (en el server real lo hacen auditd y AIDE).
+
+- id: evasion
+  nombre: Borrado de huellas y evasión
+  categoria: Evasión de defensas
+  severidad: 3
+  tactica: Defense Evasion
+  tecnica_id: T1070
+  tecnica: Indicator Removal
+  en: [cmd, cuerpo]
+  cualquiera: ["history -c", "unset histfile", "rm -rf /var/log", "/dev/null 2>&1", "pkill -9", "kill -9", "chattr", "iptables -f", "ufw disable", "setenforce 0", "rm -rf /tmp/*"]
+  explicacion: >-
+    Intenta borrar el historial y los logs, matar otros procesos (incluidos malwares rivales) o apagar el
+    firewall para que su actividad pase desapercibida.
+  recomendacion: Enviar los logs fuera del equipo (como hacemos con Elasticsearch) para que no se puedan borrar.
+
+- id: reconocimiento-sistema
+  nombre: Reconocimiento del sistema
+  categoria: Reconocimiento
+  severidad: 1
+  tactica: Discovery
+  tecnica_id: T1082
+  tecnica: System Information Discovery
+  honeypots: [cowrie, adbhoney]
+  en: [cmd]
+  cualquiera: ["uname", "/proc/cpuinfo", "nproc", "free -m", "lscpu", "whoami", "cat /etc/issue", "ifconfig", "getprop", "ps aux", "/proc/version", "cat /etc/os-release"]
+  explicacion: >-
+    Después de entrar, el bot pregunta qué máquina es: CPU, memoria, arquitectura y sistema. Con eso decide
+    qué malware descargar (por ejemplo, la versión ARM o x86 de un minero).
+  recomendacion: Sin acción; es el paso previo a la descarga de malware.
+
+- id: adb-android
+  nombre: Ataque a Android Debug Bridge (ADB)
+  categoria: Botnet
+  severidad: 3
+  tactica: Execution
+  tecnica_id: T1059
+  tecnica: Command and Scripting Interpreter
+  honeypots: [adbhoney]
+  en: [cmd]
+  cualquiera: ["pm install", "am start", "com.ufo.miner", "trinity", "/data/local/tmp", "shell:", "cnxn"]
+  explicacion: >-
+    Ataque a dispositivos Android (TV boxes, teléfonos) con el puerto de depuración ADB abierto. Instalan
+    mineros o bots como "ADB.Miner" sin pedir contraseña.
+  recomendacion: Nunca dejar el puerto 5555 (ADB) expuesto.
+
+# ── Servicios específicos de los sensores de red ──────────────────────────────────────
+- id: redis-abuso
+  nombre: Abuso de Redis expuesto
+  categoria: Explotación de servicio
+  severidad: 3
+  tactica: Execution
+  tecnica_id: T1190
+  tecnica: Exploit Public-Facing Application
+  honeypots: [redishoneypot]
+  en: [cmd]
+  cualquiera: ["config set", "slaveof", "replicaof", "module load", "flushall", "set backup", "eval "]
+  explicacion: >-
+    Redis sin contraseña permite escribir archivos en el disco (CONFIG SET dir) o cargar módulos: los
+    atacantes lo usan para meter llaves SSH, tareas cron o un minero.
+  recomendacion: Redis siempre con contraseña y escuchando solo en la red interna.
+
+- id: smb-exploit
+  nombre: Ataque a SMB (EternalBlue y similares)
+  categoria: Explotación de servicio
+  severidad: 3
+  tactica: Lateral Movement
+  tecnica_id: T1210
+  tecnica: Exploitation of Remote Services
+  honeypots: [dionaea]
+  puertos: [445, 139]
+  explicacion: >-
+    Conexiones al servicio de archivos de Windows (SMB, puerto 445). Gusanos como WannaCry usan fallas
+    como EternalBlue para propagarse solos entre equipos.
+  recomendacion: No exponer SMB a internet y aplicar el parche MS17-010.
+
+- id: ics-scada
+  nombre: Sondeo de sistemas industriales (ICS/SCADA)
+  categoria: Reconocimiento
+  severidad: 2
+  tactica: Reconnaissance
+  tecnica_id: T1595.002
+  tecnica: "Active Scanning: Vulnerability Scanning"
+  honeypots: [conpot]
+  explicacion: >-
+    Consultas a protocolos industriales (Modbus, S7, sensores de tanques de combustible). Las hacen buscadores
+    como Shodan y también grupos interesados en infraestructura crítica.
+  recomendacion: Nunca conectar equipos industriales directamente a internet.
+
+- id: smtp-relay
+  nombre: Uso del servidor de correo para spam
+  categoria: Abuso de servicio
+  severidad: 2
+  tactica: Resource Development
+  tecnica_id: T1584.004
+  tecnica: "Compromise Infrastructure: Server"
+  honeypots: [mailoney]
+  explicacion: >-
+    Intento de usar el servidor de correo como "relay abierto" para enviar spam o phishing haciéndose pasar
+    por nosotros.
+  recomendacion: Exigir autenticación en SMTP y no aceptar correo para dominios ajenos.
+
+- id: elastic-abuso
+  nombre: Consulta a Elasticsearch expuesto
+  categoria: Exposición de secretos
+  severidad: 2
+  tactica: Collection
+  tecnica_id: T1213
+  tecnica: Data from Information Repositories
+  honeypots: [elasticpot]
+  en: [url, cmd]
+  cualquiera: ["_search", "_cat/indices", "_nodes", "_cluster", "_all"]
+  explicacion: >-
+    Buscan bases Elasticsearch abiertas para copiar o secuestrar los datos (borrarlos y pedir rescate).
+    Miles de filtraciones de datos personales vinieron de esto.
+  recomendacion: Elasticsearch siempre con contraseña y sin acceso desde internet.
+
+# ── Reconocimiento automatizado (lo más común y lo menos grave) ───────────────────────
+- id: escaner-conocido
+  nombre: Escáner automatizado identificado
+  categoria: Reconocimiento
+  severidad: 1
+  tactica: Reconnaissance
+  tecnica_id: T1595
+  tecnica: Active Scanning
+  en: [ua]
+  cualquiera: ["zgrab", "masscan", "nmap", "nuclei", "sqlmap", "nikto", "dirbuster", "gobuster", "ffuf", "wpscan", "censys", "shodan", "expanse", "internet-measurement", "paloalto", "binaryedge", "leakix", "netcraft", "odin", "fuzz faster", "go-http-client", "python-requests", "curl/", "wget/", "l9explore", "httpx"]
+  explicacion: >-
+    La petición la hizo una herramienta automática (escáneres de seguridad, buscadores tipo Shodan/Censys o
+    scripts de bots). No es necesariamente malicioso: mucho de internet se escanea a sí mismo todo el día.
+  recomendacion: Sin acción; sirve para medir el "ruido de fondo" de internet.
+
+- id: sondeo-generico
+  nombre: Sondeo de rutas comunes
+  categoria: Reconocimiento
+  severidad: 1
+  tactica: Reconnaissance
+  tecnica_id: T1595.003
+  tecnica: "Active Scanning: Wordlist Scanning"
+  honeypots: [web]
+  campo: http_404
+  explicacion: >-
+    Pidió una página que no existe. Normalmente es un bot que recorre una lista de rutas típicas buscando
+    algo vulnerable.
+  recomendacion: Sin acción.

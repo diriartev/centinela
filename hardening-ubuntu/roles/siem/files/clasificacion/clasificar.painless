@@ -1,0 +1,118 @@
+// Centinela · Clasificador de ataques (se ejecuta en el pipeline de ingesta "honeypot").
+// Las reglas llegan en params.reglas (generadas desde reglas_ataques.yml + trampas de h0neytr4p).
+// Resultado: ctx.ataque.* (explicación en español), ctx.threat.* (MITRE ATT&CK) y ctx.event.severity.
+
+String bajo(def v) { return v == null ? '' : v.toString().toLowerCase(); }
+
+// Comodín simple: '*' = cualquier secuencia de caracteres
+boolean comodin(String p, String s) {
+  int pi = 0; int si = 0; int estrella = -1; int marca = 0;
+  while (si < s.length()) {
+    if (pi < p.length() && p.charAt(pi) != (char)'*' && p.charAt(pi) == s.charAt(si)) { pi++; si++; }
+    else if (pi < p.length() && p.charAt(pi) == (char)'*') { estrella = pi; marca = si; pi++; }
+    else if (estrella != -1) { pi = estrella + 1; marca++; si = marca; }
+    else { return false; }
+  }
+  while (pi < p.length() && p.charAt(pi) == (char)'*') { pi++; }
+  return pi == p.length();
+}
+
+def hp = ctx.hp;
+if (hp == null) { hp = [:]; }
+
+// Textos donde se busca (en minúsculas)
+String url = bajo(hp.url_decoded != null ? hp.url_decoded : (ctx.url?.original));
+String ruta = bajo(hp.path_decoded != null ? hp.path_decoded : (ctx.url?.path));
+String cuerpo = bajo(hp.body_decoded != null ? hp.body_decoded : ctx.http?.request?.body?.content);
+String cmd = bajo(ctx.honeypot?.command);
+String ua = bajo(ctx.user_agent?.original);
+String cb = '';
+if (hp.headers instanceof Map) {
+  for (def e : hp.headers.entrySet()) { cb += e.getKey().toString() + ': ' + String.valueOf(e.getValue()) + " ␟ "; }
+}
+String cabeceras = bajo(cb);
+String accion = bajo(ctx.event?.action) + ' ' + bajo(ctx.honeypot?.trap) + ' ' + bajo(ctx.network?.protocol);
+Map textos = ['url': url, 'cuerpo': cuerpo, 'cmd': cmd, 'ua': ua, 'cabeceras': cabeceras, 'accion': accion];
+String todo = url + " ␟ " + cuerpo + " ␟ " + cmd + " ␟ " + ua + " ␟ " + cabeceras + " ␟ " + accion;
+
+String tipo = ctx.honeypot?.type;
+String metodo = ctx.http?.request?.method == null ? '' : ctx.http.request.method.toString().toUpperCase();
+def puerto = ctx.destination?.port;
+Set campos = new HashSet();
+if (ctx.honeypot?.password != null) { campos.add('password'); }
+if (ctx.honeypot?.honeytoken != null) { campos.add('honeytoken'); }
+if (ctx.http?.response?.status_code != null && ctx.http.response.status_code.toString() == '404') { campos.add('http_404'); }
+
+List hits = new ArrayList();
+for (def r : params.reglas) {
+  if (r.hp != null && (tipo == null || !r.hp.contains(tipo))) { continue; }
+  if (r.pt != null && (puerto == null || !r.pt.contains(puerto))) { continue; }
+  if (r.me != null && r.me != '*' && r.me != metodo) { continue; }
+  if (r.campo != null && !campos.contains(r.campo)) { continue; }
+  String hay = todo;
+  if (r.en != null) {
+    hay = '';
+    for (def e : r.en) { hay += textos.get(e) + " ␟ "; }
+  }
+  boolean ok = true;
+  if (r.any != null) {
+    ok = false;
+    for (def t : r.any) { if (hay.contains(t)) { ok = true; break; } }
+  }
+  if (ok && r.grp != null) {
+    for (def g : r.grp) {
+      boolean alguno = false;
+      for (def t : g) { if (hay.contains(t)) { alguno = true; break; } }
+      if (!alguno) { ok = false; break; }
+    }
+  }
+  if (ok && r.glob != null) {
+    boolean alguno = false;
+    for (def g : r.glob) { if (comodin(g, ruta) || comodin(g, url)) { alguno = true; break; } }
+    ok = alguno;
+  }
+  if (ok) { hits.add(r); }
+}
+
+if (hits.size() > 0) {
+  def mejor = hits.get(0);
+  // gana la más grave; si empatan, la que tiene un CVE concreto (más específica)
+  for (def r : hits) { if (r.s > mejor.s || (r.s == mejor.s && r.cve != null && mejor.cve == null)) { mejor = r; } }
+  List ids = new ArrayList(); List nombres = new ArrayList(); List categorias = new ArrayList();
+  for (def r : hits) {
+    if (!ids.contains(r.id)) { ids.add(r.id); }
+    if (!nombres.contains(r.n)) { nombres.add(r.n); }
+    if (!categorias.contains(r.c)) { categorias.add(r.c); }
+  }
+  List txt = ['', 'baja', 'media', 'alta', 'critica'];
+  Map a = ['id': mejor.id, 'nombre': mejor.n, 'categoria': mejor.c, 'severidad': mejor.s, 'severidad_txt': txt.get(mejor.s),
+           'explicacion': mejor.ex, 'recomendacion': mejor.re, 'ids': ids, 'nombres': nombres, 'categorias': categorias,
+           'fuente': mejor.f];
+  if (mejor.cve != null) { a.cve = mejor.cve; }
+  if (mejor.ref != null) { a.referencias = mejor.ref; }
+  ctx.ataque = a;
+  ctx.threat = ['framework': 'MITRE ATT&CK', 'tactic': ['name': mejor.ta], 'technique': ['id': mejor.ti, 'name': mejor.te]];
+  if (ctx.event == null) { ctx.event = [:]; }
+  ctx.event.severity = mejor.s;
+
+  // URLs de descarga de malware (para capturar la muestra): solo en ataques de severidad alta o crítica
+  if (mejor.s >= 3) {
+    String o = '';
+    if (ctx.honeypot?.command != null) { o += ctx.honeypot.command.toString() + ' '; }
+    if (hp.body_decoded != null) { o += hp.body_decoded.toString() + ' '; }
+    else if (ctx.http?.request?.body?.content != null) { o += ctx.http.request.body.content.toString() + ' '; }
+    if (hp.url_decoded != null) { o += hp.url_decoded.toString() + ' '; }
+    if (hp.headers instanceof Map) { for (def e : hp.headers.entrySet()) { o += String.valueOf(e.getValue()) + ' '; } }
+    if (o.length() > 20000) { o = o.substring(0, 20000); }
+    List urls = new ArrayList();
+    def m = /(?:https?|ftp|tftp|ldaps?|rmi):\/\/[A-Za-z0-9._~:\/?#\[\]@!$&*+,=%-]+/.matcher(o);
+    while (m.find() && urls.size() < 8) {
+      String u = m.group();
+      while (u.length() > 0 && (u.endsWith(')') || u.endsWith('.') || u.endsWith(',') || u.endsWith('}'))) { u = u.substring(0, u.length() - 1); }
+      String ul = u.toLowerCase();
+      if (ul.contains('example.com') || ul.contains('://127.') || ul.contains('://localhost') || ul.contains('://10.213.')) { continue; }
+      if (!urls.contains(u)) { urls.add(u); }
+    }
+    if (urls.size() > 0) { ctx.ataque.urls = urls; }
+  }
+}

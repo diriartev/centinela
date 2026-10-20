@@ -1,0 +1,48 @@
+# {{ ansible_managed }}
+# Lee los logs JSON de cada honeypot (solo lectura) y los envía al data stream
+# "honeypot-events" pasando por el pipeline de ingesta "honeypot" (normaliza + GeoIP).
+filebeat.inputs:
+{% for hp in honeypots_logs %}
+  - type: filestream
+    id: hp-{{ hp.nombre }}
+    paths: {{ hp.rutas | to_json }}
+    prospector.scanner.check_interval: 5s
+    parsers:
+      - ndjson:
+          target: "hp"
+          add_error_key: true
+          ignore_decoding_error: true
+    fields_under_root: true
+    fields:
+      honeypot: { type: "{{ hp.nombre }}" }
+{% endfor %}
+  - type: filestream
+    id: decoy-web
+    paths: ["/decoy/*.json"]
+    prospector.scanner.check_interval: 5s
+    parsers:
+      - ndjson:
+          target: "hp"
+          add_error_key: true
+    fields_under_root: true
+    fields:
+      honeypot: { type: "web" }
+
+processors:
+  - drop_fields:
+      fields: ["agent.ephemeral_id", "agent.id", "ecs", "input", "host.name", "log.offset"]
+      ignore_missing: true
+
+output.elasticsearch:
+  hosts: ["https://{{ ip_es }}:9200"]
+  username: "centinela_ingest"
+  password: "${INGEST_PASSWORD}"
+  ssl.certificate_authorities: ["/usr/share/filebeat/certs/ca.crt"]
+  index: "honeypot-events"
+  pipeline: "honeypot"
+
+setup.template.enabled: false
+setup.ilm.enabled: false
+logging.level: warning
+logging.metrics.enabled: false
+http.enabled: false

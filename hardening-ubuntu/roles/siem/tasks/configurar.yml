@@ -1,0 +1,51 @@
+---
+- name: SIEM | Directorio de configuración inicial
+  ansible.builtin.file:
+    path: /opt/stacks/siem/setup
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: SIEM | Archivos de configuración (plantillas, pipeline, script)
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/opt/stacks/siem/setup/{{ item }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - configurar_es.sh
+    - pipeline_honeypot.api.json
+    - plantilla_honeypot-events.json
+    - plantilla_cloudflare-metrics.json
+    - plantilla_cloudflare-events.json
+
+- name: SIEM | Usuarios a crear (secretos)
+  ansible.builtin.copy:
+    dest: /opt/stacks/siem/setup/usuarios.env
+    content: |
+      ES_IP={{ ip_es }}
+      KIBANA_IP={{ ip_kibana_admin }}
+      ADMIN_USER={{ es_admin_user }}
+      ADMIN_PASSWORD={{ es_admin_password }}
+      PANEL_PASSWORD={{ es_panel_password }}
+      CFMETRICS_PASSWORD={{ es_cfmetrics_password }}
+      VISOR_PASSWORD={{ kibana_visor_password }}
+      VIGIA_PASSWORD={{ es_vigia_password | default('') }}
+      RETENCION_DIAS={{ retencion_dias }}
+      ELASTIC_ANTERIOR={{ es_elastic_password_anterior | default('') }}
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: SIEM | Aplicar configuración en Elasticsearch
+  ansible.builtin.command: bash /opt/stacks/siem/setup/configurar_es.sh
+  register: conf_es
+  changed_when: false
+  no_log: false
+
+- name: SIEM | Resultado
+  ansible.builtin.debug:
+    var: conf_es.stdout_lines

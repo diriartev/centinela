@@ -1,0 +1,46 @@
+# {{ ansible_managed }}
+name: portainer
+services:
+  portainer:
+    image: {{ portainer_imagen }}
+    container_name: portainer
+    restart: unless-stopped
+    command: >-
+      --admin-password-file /run/secrets/admin_password
+      --http-disabled
+    # Sin puertos publicados: se llega por Cloudflare Access (ops.) a través de
+    # cloudflared, o en emergencia con  ssh -L 9443:{{ ip_portainer }}:9443
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Carpeta del host (root, 0700): Portainer sale del user namespace
+      - ./data:/data
+    secrets:
+      - admin_password
+    networks:
+      admin:
+        ipv4_address: {{ ip_portainer }}
+    # Portainer administra Docker: necesita el root real del host (es el único
+    # contenedor que sale del user namespace y el único con docker.sock).
+    userns_mode: host
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
+    healthcheck:
+      disable: true
+    logging:
+      driver: local
+      options: { max-size: "10m", max-file: "3" }
+
+secrets:
+  admin_password:
+    file: ./secrets/admin_password
+
+networks:
+  admin:
+    external: true
+    name: {{ red_admin.nombre }}

@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+# "install X /bin/false" impide cargarlo incluso con modprobe manual.
+# "blacklist X" impide que udev lo cargue al detectar hardware.
+{% for m in modulos_bloqueados %}
+
+# {{ m.motivo }}
+install {{ m.nombre }} /bin/false
+blacklist {{ m.nombre }}
+{% endfor %}

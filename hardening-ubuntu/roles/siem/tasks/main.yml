@@ -1,0 +1,183 @@
+---
+# ════════════════════════════════════════════════════════════════════
+#  SIEM: Elasticsearch + Kibana + Filebeat (red "data", sin salida)
+# ════════════════════════════════════════════════════════════════════
+- name: SIEM | Directorios
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0711"
+  loop: [/opt/stacks/siem, /opt/stacks/siem/certs, /opt/stacks/siem/config]
+
+# Elasticsearch vigila config/ y necesita poder listar esta carpeta (bases públicas)
+- name: SIEM | Carpeta de bases GeoIP
+  ansible.builtin.file:
+    path: /opt/stacks/siem/geoip
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# ── Certificados internos (CA propia, 10 años) ─────────────────────
+- name: SIEM | Generar CA y certificados de es01 y kibana
+  ansible.builtin.shell: |
+    set -euo pipefail
+    cd /opt/stacks/siem/certs
+    # v2: el certificado de Kibana incluye su IP de la red admin (TLS de punta a punta)
+    [ -f kibana.v2 ] || rm -f kibana.crt kibana.key
+    if [ ! -f ca.crt ]; then
+      openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes -keyout ca.key -out ca.crt -subj "/CN=Centinela Internal CA"
+    fi
+    for n in es01 kibana; do
+      [ -f $n.crt ] && continue
+      ip=$([ $n = es01 ] && echo "IP:{{ ip_es }}" || echo "IP:{{ ip_kibana_data }},IP:{{ ip_kibana_admin }},DNS:insights.{{ cf_dominio }}")
+      openssl req -newkey rsa:3072 -nodes -keyout $n.key -out $n.csr -subj "/CN=$n"
+      printf "subjectAltName=DNS:$n,DNS:localhost,$ip,IP:127.0.0.1\nextendedKeyUsage=serverAuth,clientAuth\n" > $n.ext
+      openssl x509 -req -in $n.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out $n.crt -days 1825 -sha256 -extfile $n.ext
+      rm -f $n.csr $n.ext
+    done
+    touch kibana.v2
+    echo listo
+  args:
+    executable: /bin/bash
+    creates: /opt/stacks/siem/certs/kibana.v2
+
+# Elasticsearch y Kibana corren como uid 1000 → en el host {{ dockremap_subid_inicio + 1000 }}
+- name: SIEM | Permisos de certificados (clave de la CA solo root)
+  ansible.builtin.shell: |
+    cd /opt/stacks/siem/certs
+    chown root:root ca.key && chmod 0400 ca.key
+    chown {{ dockremap_subid_inicio + 1000 }}:{{ dockremap_subid_inicio + 1000 }} es01.* kibana.* && chmod 0440 es01.key kibana.key && chmod 0444 *.crt
+  changed_when: false
+
+# ── GeoIP sin internet: el host baja GeoLite2 (servicio gratuito de Elastic) y
+#    Elasticsearch las lee de config/ingest-geoip (su downloader está apagado)
+- name: SIEM | Bases GeoIP (GeoLite2 City y ASN, se renuevan cada 30 días)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    cd /opt/stacks/siem/geoip
+    rm -f dbip-*.mmdb
+    lista=$(curl -fsS "https://geoip.elastic.co/v1/database?elastic_geoip_service_tos=agree")
+    for db in GeoLite2-City GeoLite2-ASN; do
+      if [ ! -s $db.mmdb ] || [ $(find $db.mmdb -mtime +30 | wc -l) -gt 0 ]; then
+        url=$(echo "$lista" | jq -r --arg n "$db.tgz" '.[]|select(.name==$n)|.url')
+        md5=$(echo "$lista" | jq -r --arg n "$db.tgz" '.[]|select(.name==$n)|.md5_hash')
+        tmp=$(mktemp -d); curl -fsS "$url" -o $tmp/db.tgz
+        echo "$md5  $tmp/db.tgz" | md5sum -c --quiet
+        tar -xzf $tmp/db.tgz -C $tmp && find $tmp -name "$db.mmdb" -exec mv -f {} ./$db.mmdb \;
+        rm -rf $tmp; echo "actualizada $db"
+      fi
+    done
+    chown {{ dockremap_subid_inicio + 1000 }}:{{ dockremap_subid_inicio + 1000 }} *.mmdb; chmod 0444 *.mmdb
+  args:
+    executable: /bin/bash
+  register: geoip
+  changed_when: "'actualizada' in geoip.stdout"
+
+- name: SIEM | Variables de entorno (secretos)
+  ansible.builtin.template:
+    src: env.j2
+    dest: /opt/stacks/siem/.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: SIEM | Configuración de Filebeat
+  ansible.builtin.template:
+    src: filebeat.yml.j2
+    dest: /opt/stacks/siem/config/filebeat.yml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Recrear siem
+
+- name: SIEM | compose.yml
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: /opt/stacks/siem/compose.yml
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: SIEM | Carpetas de logs que lee Filebeat (deben existir)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [/opt/stacks/honeypots, /opt/stacks/honeypots/data]
+
+# El dueño y los permisos de estas las define el rol decoy: aquí solo se crean si faltan
+- name: SIEM | Carpetas del señuelo (solo si no existen)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+  loop: [/opt/stacks/decoy, /opt/stacks/decoy/log]
+
+- name: SIEM | Carpeta de snapshots (copias consistentes de Elasticsearch)
+  ansible.builtin.file:
+    path: /opt/stacks/siem/snapshots
+    state: directory
+    owner: "{{ dockremap_subid_inicio + 1000 }}"
+    group: "{{ dockremap_subid_inicio + 1000 }}"
+    mode: "0750"
+
+- name: SIEM | Levantar Elasticsearch
+  community.docker.docker_compose_v2:
+    project_src: /opt/stacks/siem
+    services: [es01]
+    state: present
+    pull: missing
+    wait: true
+    wait_timeout: 600
+
+- name: SIEM | Configurar Elasticsearch (usuarios, roles, plantillas, pipelines)
+  ansible.builtin.include_tasks: configurar.yml
+
+- name: SIEM | Configuración de Kibana (acceso directo con Cloudflare Access, solo lectura)
+  ansible.builtin.copy:
+    src: kibana.yml
+    dest: /opt/stacks/siem/kibana.yml
+    owner: root
+    group: root
+    mode: "0644"
+  register: kibana_yml
+
+- name: SIEM | Levantar Kibana y Filebeat
+  community.docker.docker_compose_v2:
+    project_src: /opt/stacks/siem
+    state: present
+    pull: missing
+    services: "{{ ['kibana'] if kibana_yml.changed else omit }}"
+    recreate: "{{ 'always' if kibana_yml.changed else 'auto' }}"
+    wait: true
+    wait_timeout: 300
+
+- name: SIEM | Levantar el resto (Filebeat)
+  community.docker.docker_compose_v2:
+    project_src: /opt/stacks/siem
+    state: present
+    wait: true
+    wait_timeout: 300
+
+- name: SIEM | Archivos de Kibana (dashboards)
+  ansible.builtin.copy:
+    src: "kibana/{{ item }}"
+    dest: "/opt/stacks/siem/setup/{{ item }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: [objetos.ndjson, configurar_kibana.sh]
+
+- name: SIEM | Configurar Kibana (modo oscuro, vistas de datos, dashboards)
+  ansible.builtin.command: bash /opt/stacks/siem/setup/configurar_kibana.sh
+  register: conf_kb
+  changed_when: false
+
+- name: SIEM | Resultado Kibana
+  ansible.builtin.debug:
+    var: conf_kb.stdout_lines

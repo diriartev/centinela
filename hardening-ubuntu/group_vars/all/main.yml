@@ -1,0 +1,212 @@
+---
+# ════════════════════════════════════════════════════════════════════
+#  VARIABLES DEL HARDENING (Ubuntu 22.04 + Docker) — todo lo ajustable
+#  Port del proyecto hardening-almalinux, adaptado a un host de Docker.
+#  Los secretos (knock, Portainer) están en secretos/generados.yml
+# ════════════════════════════════════════════════════════════════════
+
+# ── Usuario administrador ──────────────────────────────────────────
+# Se rellena con el usuario real del server (el de inventory.ini)
+admin_usuario: "{{ ansible_user }}"
+admin_llave_publica: "~/.ssh/id_ed25519.pub"
+ssh_grupo: sshusers              # AllowGroups: solo este grupo entra por SSH
+
+# ── SSH ────────────────────────────────────────────────────────────
+# ssh_puerto (aleatorio) está en secretos/generados.yml
+ansible_port: "{{ ssh_puerto_conexion | default(ssh_puerto) }}"
+# true = sshd escucha también en el 22 mientras se migra al puerto nuevo
+ssh_transicion: false
+# Contraseña permitida SOLO para estos usuarios (nunca root). El resto: llave.
+ssh_usuarios_con_password: []   # p. ej. [admin] si quieres permitir contraseña (+ knocking) a ese usuario
+# true = el 22 deja de estar abierto a internet. Solo se entra por:
+#   · Cloudflare Tunnel + Access (llega a sshd por localhost)
+#   · port knocking (emergencia)
+#   · redes_admin (abajo)
+# Se pone en true SOLO después de comprobar que el túnel funciona.
+cerrar_ssh_publico: true
+redes_admin: []                  # p.ej. la red de gestión de la institución: ["10.20.0.0/16"]
+
+# ── Port knocking (emergencia si cae Cloudflare) ───────────────────
+# knock_secuencia viene de secretos/generados.yml
+knock_timeout_secuencia: 15
+knock_tiempo_abierto: 300        # segundos que el 22 queda abierto para tu IP
+
+# ── Fail2Ban ───────────────────────────────────────────────────────
+f2b_maxretry: 3
+f2b_findtime: 10m
+f2b_bantime: 1h
+f2b_ignoreip: []
+
+# ── Actualizaciones ────────────────────────────────────────────────
+reiniciar_si_hace_falta: false   # el server está en un datacenter: reinicio manual y avisado
+
+# ── Docker ─────────────────────────────────────────────────────────
+# Rango propio para redes de Docker (evita chocar con las redes de la institución,
+# que suelen usar 172.16/12 o 10.x). El preflight comprueba que no choque.
+docker_pool: 10.213.0.0/16
+docker_bip: 10.213.255.1/24
+# Por defecto los puertos publicados escuchan SOLO en 127.0.0.1.
+# Lo que deba salir a la red se publica a propósito con IP explícita.
+docker_ip_por_defecto: 127.0.0.1
+
+# Volumen LVM aparte para /var/lib/docker (ajusta los tamaños al espacio libre de tu VG)
+docker_lv_vg: ubuntu-vg
+docker_lv_tam: 140g
+home_lv_tam: 8g
+dominio_interno: internal
+
+# ── Portainer ──────────────────────────────────────────────────────
+portainer_imagen: portainer/portainer-ce:lts
+portainer_puerto_local: 9443     # 127.0.0.1:9443 (túnel SSH o Cloudflare)
+
+# ── Módulos de kernel a deshabilitar ───────────────────────────────
+# A diferencia de la VM de AlmaLinux, aquí NO se tocan overlay, br_netfilter,
+# veth, nf_*, ip_tables ni xt_*: Docker los necesita.
+modulos_bloqueados:
+  - { nombre: uas,           motivo: "discos USB Attached SCSI" }
+  - { nombre: usb-storage,   motivo: "memorias USB (exfiltración / malware)" }
+  - { nombre: firewire-sbp2, motivo: "FireWire storage" }
+  - { nombre: firewire-ohci, motivo: "FireWire (ataques DMA)" }
+  - { nombre: firewire-core, motivo: "FireWire (ataques DMA)" }
+  - { nombre: thunderbolt,   motivo: "Thunderbolt (ataques DMA)" }
+  - { nombre: uvcvideo,      motivo: "cámara web" }
+  - { nombre: snd-usb-audio, motivo: "micrófonos USB" }
+  - { nombre: btusb,         motivo: "Bluetooth USB" }
+  - { nombre: bluetooth,     motivo: "Bluetooth" }
+  - { nombre: pcspkr,        motivo: "altavoz interno" }
+  - { nombre: cramfs,        motivo: "FS no usado (CIS 1.1.1)" }
+  - { nombre: freevxfs,      motivo: "FS no usado" }
+  - { nombre: jffs2,         motivo: "FS no usado" }
+  - { nombre: hfs,           motivo: "FS no usado" }
+  - { nombre: hfsplus,       motivo: "FS no usado" }
+  - { nombre: udf,           motivo: "FS no usado" }
+  - { nombre: dccp,          motivo: "protocolo no usado (CIS 3.2)" }
+  - { nombre: sctp,          motivo: "protocolo no usado" }
+  - { nombre: rds,           motivo: "protocolo no usado" }
+  - { nombre: tipc,          motivo: "protocolo no usado" }
+
+# ── Extras ─────────────────────────────────────────────────────────
+# USBGuard bloquea USB nuevos MENOS teclados/ratones (clase HID) y hubs:
+# en un datacenter alguien puede necesitar conectar un teclado de emergencia.
+usbguard_activo: true
+syslog_remoto: ""                # "IP" para copiar logs fuera (UDP 514). "" = no
+
+# ── Redes de Docker del proyecto ───────────────────────────────────
+# edge : ÚNICA red con salida a internet (solo cloudflared → Cloudflare)
+# admin: interna, sin salida (Portainer, Kibana, panel…); cloudflared la publica
+red_edge:  { nombre: edge,  subred: 10.213.250.0/24, gateway: 10.213.250.1, puente: br-vs-edge }
+red_admin: { nombre: admin, subred: 10.213.251.0/24, gateway: 10.213.251.1, puente: br-vs-admin }
+ip_cloudflared_edge: 10.213.250.10
+ip_cloudflared_admin: 10.213.251.2
+ip_portainer: 10.213.251.10
+# Rango de UIDs del "root" de los contenedores (separado del de los usuarios)
+dockremap_subid_inicio: 300000
+
+# ── cloudflared ────────────────────────────────────────────────────
+cloudflared_imagen: cloudflare/cloudflared:2026.9.0
+cf_cuenta_id: "{{ lookup('env', 'CF_ACCOUNT_ID') }}"   # de config.env (source ../config.env antes de ansible)
+cf_zona_id: "{{ lookup('env', 'CF_ZONE_ID') }}"
+cf_team: "{{ lookup('env', 'CF_TEAM') }}"
+cf_dominio: "{{ lookup('env', 'DOMINIO') | default('example.com', true) }}"
+# DNS que puede usar cloudflared (los mismos del server)
+dns_permitidos: [8.8.8.8, 1.1.1.1]
+# Rangos IPv4 de Cloudflare (https://www.cloudflare.com/ips-v4). cloudflared solo
+# puede conectarse a estos, por 443 (API) y 7844 (túnel QUIC/HTTP2).
+cloudflare_ipv4:
+  - 173.245.48.0/20
+  - 103.21.244.0/22
+  - 103.22.200.0/22
+  - 103.31.4.0/22
+  - 141.101.64.0/18
+  - 108.162.192.0/18
+  - 190.93.240.0/20
+  - 188.114.96.0/20
+  - 197.234.240.0/22
+  - 198.41.128.0/17
+  - 162.158.0.0/15
+  - 104.16.0.0/13
+  - 104.24.0.0/14
+  - 172.64.0.0/13
+  - 131.0.72.0/22
+
+# Redes internas adicionales (sin salida a internet)
+red_data:  { nombre: data,  subred: 10.213.252.0/24, gateway: 10.213.252.1, puente: br-vs-data }
+red_honey: { nombre: honey, subred: 10.213.253.0/24, gateway: 10.213.253.1, puente: br-vs-honey }
+red_dmz:   { nombre: dmz,   subred: 10.213.254.0/24, gateway: 10.213.254.1, puente: br-vs-dmz }
+red_mon:   { nombre: mon,   subred: 10.213.248.0/24, gateway: 10.213.248.1, puente: br-vs-mon }
+redes_internas: ["{{ red_admin }}", "{{ red_data }}", "{{ red_honey }}", "{{ red_dmz }}", "{{ red_mon }}"]
+
+# IPs fijas
+ip_es: 10.213.252.10
+ip_kibana_data: 10.213.252.11
+ip_kibana_admin: 10.213.251.11
+ip_filebeat: 10.213.252.12
+ip_panel_admin: 10.213.251.12
+ip_panel_data: 10.213.252.13
+ip_panel_honey: 10.213.253.2
+ip_cfmetrics_edge: 10.213.250.11
+ip_cfmetrics_data: 10.213.252.14
+ip_cloudflared_dmz: 10.213.254.2
+ip_decoy: 10.213.254.10
+ip_vigia_edge: 10.213.250.12
+ip_vigia_data: 10.213.252.15
+honeypots_ips:
+  cowrie: 10.213.253.10
+  dionaea: 10.213.253.11
+  conpot: 10.213.253.12
+  elasticpot: 10.213.253.13
+  redishoneypot: 10.213.253.14
+  mailoney: 10.213.253.15
+  adbhoney: 10.213.253.16
+# ── Sensores web de T-Pot detrás del gateway del señuelo ──────────
+# Cada sensor vive en su PROPIA red interna (/29) que solo comparte con el gateway:
+# si uno fuera comprometido no ve a los demás, ni a cloudflared, ni al resto de la infra.
+# host = subdominio público (vacío = solo trampas de CVE para rutas desconocidas del sitio principal)
+# Marca ficticia de la web señuelo (elige una creíble y que no se relacione contigo)
+decoy_marca: "Example Services"
+
+sensores_web:
+  - { nombre: wordpot,        host: blog, imagen: "dtagdevsec/wordpot:24.04.1",        esquema: http,  puerto: 80,   subred: 10.213.240.0/29,  gw: 10.213.240.1,  ip_gateway: 10.213.240.2,  ip: 10.213.240.3,  puente: br-vs-s-blog, mem: 192m }
+  - { nombre: honeyaml,       host: api,  imagen: "dtagdevsec/honeyaml:24.04.1",       esquema: http,  puerto: 8080, subred: 10.213.240.8/29,  gw: 10.213.240.9,  ip_gateway: 10.213.240.10, ip: 10.213.240.11, puente: br-vs-s-api,  mem: 96m }
+  - { nombre: citrixhoneypot, host: vpn,  imagen: "dtagdevsec/citrixhoneypot:24.04.1", esquema: https, puerto: 443,  subred: 10.213.240.16/29, gw: 10.213.240.17, ip_gateway: 10.213.240.18, ip: 10.213.240.19, puente: br-vs-s-vpn,  mem: 128m }
+  - { nombre: log4pot,        host: sso,  imagen: "dtagdevsec/log4pot:24.04.1",        esquema: http,  puerto: 8080, subred: 10.213.240.24/29, gw: 10.213.240.25, ip_gateway: 10.213.240.26, ip: 10.213.240.27, puente: br-vs-s-sso,  mem: 192m }
+  - { nombre: h0neytr4p,      host: "",   imagen: "dtagdevsec/h0neytr4p:24.04.1",      esquema: https, puerto: 443,  subred: 10.213.240.32/29, gw: 10.213.240.33, ip_gateway: 10.213.240.34, ip: 10.213.240.35, puente: br-vs-s-cve,  mem: 96m }
+
+# Solo estas IPs de la red edge pueden salir (a Cloudflare)
+ips_con_salida: ["{{ ip_cloudflared_edge }}", "{{ ip_cfmetrics_edge }}", "{{ ip_vigia_edge }}"]
+
+# ── SIEM (Elastic) ─────────────────────────────────────────────────
+elastic_version: 9.5.4
+es_heap: 4g
+es_mem_limit: 6g
+retencion_dias: 60
+
+# Rutas de log (dentro de Filebeat, /hp = /opt/stacks/honeypots/data)
+honeypots_logs:
+  - { nombre: cowrie,        rutas: ["/hp/cowrie/log/cowrie.json*"] }
+  - { nombre: dionaea,       rutas: ["/hp/dionaea/log/dionaea.json*"] }
+  - { nombre: conpot,        rutas: ["/hp/conpot/log/*.json*"] }
+  - { nombre: elasticpot,    rutas: ["/hp/elasticpot/log/elasticpot.json*"] }
+  - { nombre: redishoneypot, rutas: ["/hp/redishoneypot/log/redishoneypot.log*"] }
+  - { nombre: mailoney,      rutas: ["/hp/mailoney/log/commands.log*"] }
+  - { nombre: adbhoney,      rutas: ["/hp/adbhoney/log/adbhoney.json*"] }
+
+# ── Panel (console.) ───────────────────────────────────────────────
+correos_permitidos: [admin@example.com]   # los mantiene scripts/acceso.sh
+panel_librerias:
+  - { nombre: world.json,     url: "https://cdn.jsdelivr.net/npm/echarts@4.9.0/map/json/world.json",        sha: "sha256:049b334579e5a42d5d16c72d014d380e048e39fc1504049f212acb589484d2fa" }
+  - { nombre: echarts.min.js, url: "https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js",   sha: "sha256:42f8329d989b6f6539dd2b15bbdf0d82025762ac112fbb60dc57b27d7bcf3946" }
+
+# ── Monitoreo de infraestructura (Prometheus + Alertmanager + Grafana) ──
+# Red "mon": interna. node-exporter corre en la red del host y solo escucha en el gateway de "mon".
+ip_cloudflared_mon: 10.213.248.2
+ip_prometheus: 10.213.248.10
+ip_alertmanager: 10.213.248.11
+ip_vigia_mon: 10.213.248.12
+ip_grafana: 10.213.248.13
+monitoreo_imagenes:
+  prometheus: prom/prometheus:v3.14.0
+  alertmanager: prom/alertmanager:v0.34.1
+  grafana: grafana/grafana:13.2.3
+  node_exporter: prom/node-exporter:v1.12.1
+prometheus_retencion: 30d

@@ -1,0 +1,108 @@
+---
+# Centro de mando (console.): solo lectura sobre Elasticsearch + estado del host.
+- name: Panel | Directorios
+  ansible.builtin.file:
+    path: "{{ item.p }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.m }}"
+  loop:
+    - { p: /opt/stacks/panel, m: "0711" }
+    - { p: /opt/stacks/panel/build, m: "0700" }
+    - { p: /opt/stacks/panel/build/app/static/lib, m: "0755" }
+    - { p: /opt/stacks/panel/status, m: "0755" }
+
+- name: Panel | Código del panel
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: /opt/stacks/panel/build/
+    owner: root
+    group: root
+    mode: preserve
+  loop: [Dockerfile, app]
+  register: panel_src
+
+# Librerías del frontend descargadas por el host (el panel no carga scripts de terceros)
+- name: Panel | Librerías (Leaflet y ECharts) con verificación de integridad
+  ansible.builtin.get_url:
+    url: "{{ item.url }}"
+    dest: "/opt/stacks/panel/build/app/static/lib/{{ item.nombre }}"
+    checksum: "{{ item.sha }}"
+    mode: "0644"
+  loop: "{{ panel_librerias }}"
+  loop_control:
+    label: "{{ item.nombre }}"
+  register: panel_libs
+
+- name: Panel | Script de estado del host
+  ansible.builtin.copy:
+    src: centinela-estado.sh
+    dest: /usr/local/sbin/centinela-estado
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Panel | Servicio y temporizador del estado (cada 30 s)
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.n }}"
+    content: "{{ item.c }}"
+    mode: "0644"
+  loop:
+    - n: centinela-estado.service
+      c: |
+        [Unit]
+        Description=Centinela - estado de contenedores para el panel
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/centinela-estado
+        Nice=10
+        ProtectSystem=full
+        PrivateTmp=true
+        NoNewPrivileges=true
+    - n: centinela-estado.timer
+      c: |
+        [Unit]
+        Description=Centinela - estado cada 30 s
+        [Timer]
+        OnBootSec=30s
+        OnUnitActiveSec=30s
+        AccuracySec=5s
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.n }}"
+
+- name: Panel | Activar temporizador
+  ansible.builtin.systemd:
+    name: centinela-estado.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Panel | Variables (secretos)
+  ansible.builtin.copy:
+    dest: /opt/stacks/panel/.env
+    content: |
+      ES_PASSWORD={{ es_panel_password }}
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Panel | compose.yml
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: /opt/stacks/panel/compose.yml
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Panel | Construir y levantar
+  community.docker.docker_compose_v2:
+    project_src: /opt/stacks/panel
+    state: present
+    build: "{{ 'always' if (panel_src.changed or panel_libs.changed) else 'policy' }}"
+    recreate: "{{ 'always' if (panel_src.changed or panel_libs.changed) else 'auto' }}"
+    wait: true
+    wait_timeout: 120

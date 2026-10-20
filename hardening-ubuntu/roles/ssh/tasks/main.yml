@@ -1,0 +1,45 @@
+---
+- name: SSH | Llaves de host débiles fuera (solo ed25519 y RSA)
+  ansible.builtin.file:
+    path: "/etc/ssh/{{ item }}"
+    state: absent
+  loop: [ssh_host_dsa_key, ssh_host_dsa_key.pub, ssh_host_ecdsa_key, ssh_host_ecdsa_key.pub]
+  notify: Recargar sshd
+
+# Ubuntu lee /etc/ssh/sshd_config.d/*.conf AL PRINCIPIO y sshd usa el
+# primer valor que encuentra: "01-" gana incluso sobre 50-cloud-init.conf.
+- name: SSH | Configuración endurecida
+  ansible.builtin.template:
+    src: 01-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/01-hardening.conf
+    owner: root
+    group: root
+    mode: "0600"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Recargar sshd
+
+- name: SSH | Quitar módulos DH pequeños (< 3072 bits)
+  ansible.builtin.shell: |
+    set -o pipefail
+    awk '$5 >= 3071' /etc/ssh/moduli > /etc/ssh/moduli.safe
+    if ! cmp -s /etc/ssh/moduli /etc/ssh/moduli.safe; then mv /etc/ssh/moduli.safe /etc/ssh/moduli; echo cambiado; else rm -f /etc/ssh/moduli.safe; fi
+  args:
+    executable: /bin/bash
+  register: moduli
+  changed_when: "'cambiado' in moduli.stdout"
+
+# Los bloques Match deben ir al FINAL del archivo principal (si van en un
+# include al principio, se tragarían el resto de la configuración).
+- name: SSH | Contraseña solo para usuarios concretos (nunca root)
+  ansible.builtin.blockinfile:
+    path: /etc/ssh/sshd_config
+    marker: "# {mark} CONTRASEÑA POR USUARIO (Ansible)"
+    insertafter: EOF
+    block: |
+      {% if ssh_usuarios_con_password | length > 0 %}
+      Match User {{ ssh_usuarios_con_password | reject('equalto', 'root') | join(',') }}
+          PasswordAuthentication yes
+      Match all
+      {% endif %}
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Recargar sshd

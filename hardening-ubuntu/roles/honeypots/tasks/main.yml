@@ -1,0 +1,61 @@
+---
+# Honeypots de T-Pot 24.04.1 (Deutsche Telekom). Corren como uid 2000 dentro del
+# contenedor = {{ dockremap_subid_inicio + 2000 }} en el host (user namespace).
+- name: Honeypots | Carpetas de datos
+  ansible.builtin.file:
+    path: "/opt/stacks/honeypots/data/{{ item }}"
+    state: directory
+    owner: "{{ dockremap_subid_inicio + 2000 }}"
+    group: "{{ dockremap_subid_inicio + 2000 }}"
+    mode: "0755"
+  loop:
+    - cowrie
+    - cowrie/downloads
+    - cowrie/keys
+    - cowrie/log
+    - cowrie/log/tty
+    - dionaea
+    - dionaea/roots/ftp
+    - dionaea/roots/tftp
+    - dionaea/roots/www
+    - dionaea/roots/upnp
+    - dionaea/binaries
+    - dionaea/log
+    - dionaea/rtp
+    - conpot/log
+    - elasticpot/log
+    - redishoneypot/log
+    - mailoney/log
+    - adbhoney/log
+    - adbhoney/downloads
+
+- name: Honeypots | compose.yml
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: /opt/stacks/honeypots/compose.yml
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Honeypots | Levantar
+  community.docker.docker_compose_v2:
+    project_src: /opt/stacks/honeypots
+    state: present
+    pull: missing
+    wait: false
+
+- name: Honeypots | Rotación de logs (el disco no se llena)
+  ansible.builtin.copy:
+    dest: /etc/logrotate.d/centinela-honeypots
+    content: |
+      /opt/stacks/honeypots/data/*/log/*.json /opt/stacks/honeypots/data/*/log/*.log /opt/stacks/decoy/log/*.json /opt/stacks/decoy/sensores/*/log/*.json /opt/stacks/decoy/sensores/*/log/*.log {
+          daily
+          rotate 14
+          compress
+          delaycompress
+          missingok
+          notifempty
+          copytruncate
+          maxsize 200M
+      }
+    mode: "0644"

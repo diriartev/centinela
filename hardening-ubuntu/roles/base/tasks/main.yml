@@ -1,0 +1,377 @@
+---
+# ── Paquetes y parches ─────────────────────────────────────────────
+# Algunas redes bloquean los mirrors regionales de Ubuntu:
+# se usa el principal. HTTP está bien: apt verifica las firmas GPG.
+- name: Base | Mirror principal de Ubuntu
+  ansible.builtin.replace:
+    path: /etc/apt/sources.list
+    regexp: 'http://co\.archive\.ubuntu\.com'
+    replace: 'http://archive.ubuntu.com'
+
+- name: Base | Actualizar índice de paquetes
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Base | Aplicar actualizaciones pendientes (sin cambiar de versión mayor)
+  ansible.builtin.apt:
+    upgrade: safe
+  register: apt_up
+  retries: 3
+  delay: 10
+  until: apt_up is succeeded
+
+- name: Base | Herramientas de seguridad y soporte
+  ansible.builtin.apt:
+    name:
+      - unattended-upgrades     # parches de seguridad automáticos
+      - apt-listchanges
+      - needrestart             # avisa qué servicios usan librerías viejas
+      - apparmor
+      - apparmor-utils
+      - apparmor-profiles
+      - libpam-pwquality
+      - libpam-tmpdir           # $TMPDIR privado por sesión (Lynis DEB-0280)
+      - chrony
+      - rsyslog
+      - cron
+      - lynis
+      - rkhunter
+      - aide
+      - auditd
+      - audispd-plugins
+      - acct                    # contabilidad de procesos (Lynis ACCT-9622)
+      - sysstat                 # estadísticas (Lynis ACCT-9626)
+      - debsums                 # integridad de paquetes (Lynis PKGS-7370)
+      - apt-show-versions       # Lynis PKGS-7394
+      - python3-systemd         # backend systemd de Fail2Ban
+      - curl
+      - ca-certificates
+      - gnupg
+      - jq
+      - rsync
+    state: present
+  register: apt_r
+  retries: 3
+  delay: 10
+  until: apt_r is succeeded
+
+- name: Base | Quitar servidores inseguros si existen
+  ansible.builtin.apt:
+    name: [telnetd, inetutils-telnetd, rsh-server, rsh-redone-server, tftpd-hpa, nis, xinetd, vsftpd, talkd]
+    state: absent
+    purge: true
+
+# ── Parches automáticos (solo seguridad, sin reiniciar solo) ───────
+- name: Base | Activar unattended-upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+    mode: "0644"
+
+- name: Base | Política de unattended-upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/52hardening-unattended
+    content: |
+      // Gestionado por Ansible
+      Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+      // Datacenter de la institución: nunca reiniciar solo
+      Unattended-Upgrade::Automatic-Reboot "false";
+      // Docker se actualiza a mano (un upgrade reinicia todos los contenedores)
+      Unattended-Upgrade::Package-Blacklist { "docker-ce"; "docker-ce-cli"; "containerd.io"; };
+    mode: "0644"
+
+# needrestart en modo automático para que apt no se quede preguntando
+- name: Base | needrestart no interactivo
+  ansible.builtin.copy:
+    dest: /etc/needrestart/conf.d/50-hardening.conf
+    content: |
+      $nrconf{restart} = 'a';
+    mode: "0644"
+
+# ── AppArmor (el equivalente de SELinux en Ubuntu) ─────────────────
+- name: Base | AppArmor habilitado
+  ansible.builtin.systemd:
+    name: apparmor
+    enabled: true
+    state: started
+
+# ── Servicios innecesarios ─────────────────────────────────────────
+- name: Base | Recolectar servicios
+  ansible.builtin.service_facts:
+
+- name: Base | Deshabilitar y enmascarar servicios innecesarios
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+    masked: true
+  loop:
+    - avahi-daemon.service
+    - avahi-daemon.socket
+    - cups.service
+    - cups.socket
+    - cups-browsed.service
+    - bluetooth.service
+    - rpcbind.service
+    - rpcbind.socket
+    - nfs-server.service
+    - rsync.service
+    - ModemManager.service
+  when: item in ansible_facts.services
+  failed_when: false
+
+- name: Base | Deshabilitar Ctrl+Alt+Supr
+  ansible.builtin.systemd:
+    name: ctrl-alt-del.target
+    masked: true
+
+- name: Base | Servicios de tiempo, logs y contabilidad activos
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [chrony, rsyslog, cron, acct, sysstat]
+
+- name: Base | sysstat recolectando datos
+  ansible.builtin.lineinfile:
+    path: /etc/default/sysstat
+    regexp: '^ENABLED='
+    line: 'ENABLED="true"'
+
+# ── Usuario administrador ──────────────────────────────────────────
+- name: Base | Grupo de acceso SSH
+  ansible.builtin.group:
+    name: "{{ ssh_grupo }}"
+    system: true
+
+- name: Base | Admin en los grupos sudo y de SSH
+  ansible.builtin.user:
+    name: "{{ admin_usuario }}"
+    groups: ["sudo", "{{ ssh_grupo }}"]
+    append: true
+    shell: /bin/bash
+
+- name: Base | Autorizar la llave del controlador
+  ansible.posix.authorized_key:
+    user: "{{ admin_usuario }}"
+    key: "{{ lookup('ansible.builtin.file', admin_llave_publica | expanduser) }}"
+    exclusive: false
+
+- name: Base | Home del admin solo para su dueño
+  ansible.builtin.file:
+    path: "/home/{{ admin_usuario }}"
+    mode: "0750"
+
+# ── sudo ───────────────────────────────────────────────────────────
+- name: Base | Endurecer sudo (pty, log, timeout)
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/10-hardening
+    content: |
+      # Gestionado por Ansible
+      Defaults use_pty
+      Defaults logfile="/var/log/sudo.log"
+      Defaults timestamp_timeout=5
+      Defaults passwd_tries=3
+    mode: "0440"
+    owner: root
+    group: root
+    validate: /usr/sbin/visudo -cf %s
+
+# ── /tmp en memoria (nosuid,nodev) ─────────────────────────────────
+- name: Base | Unidad tmp.mount (tmpfs para /tmp)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/tmp.mount
+    content: |
+      # Gestionado por Ansible
+      [Unit]
+      Description=Temporary Directory /tmp
+      ConditionPathIsSymbolicLink=!/tmp
+      DefaultDependencies=no
+      Conflicts=umount.target
+      Before=local-fs.target umount.target
+      After=swap.target
+      [Mount]
+      What=tmpfs
+      Where=/tmp
+      Type=tmpfs
+      Options=mode=1777,strictatime,nosuid,nodev,size=2G,nr_inodes=1m
+      [Install]
+      WantedBy=local-fs.target
+    mode: "0644"
+
+- name: Base | ¿/tmp ya es tmpfs?
+  ansible.builtin.command: findmnt -no FSTYPE /tmp
+  register: tmp_fs
+  changed_when: false
+  failed_when: false
+
+# raw: Ansible puede estar usando /tmp; montar encima con un módulo normal lo rompe
+- name: Base | Montar /tmp como tmpfs
+  ansible.builtin.raw: systemctl daemon-reload && systemctl enable --now tmp.mount
+  when: tmp_fs.stdout != "tmpfs"
+  changed_when: true
+
+# ── Fact local (Lynis TOOL-5002) ───────────────────────────────────
+- name: Base | Directorio de facts locales
+  ansible.builtin.file:
+    path: /etc/ansible/facts.d
+    state: directory
+    mode: "0750"
+
+- name: Base | Registrar hardening aplicado
+  ansible.builtin.copy:
+    dest: /etc/ansible/facts.d/hardening.fact
+    content: |
+      [hardening]
+      gestionado_por=ansible
+      proyecto=hardening-ubuntu (port de hardening-almalinux)
+    mode: "0640"
+
+- name: Base | debsums revisa la integridad de los paquetes cada semana (Lynis PKGS-7370)
+  ansible.builtin.lineinfile:
+    path: /etc/default/debsums
+    regexp: '^CRON_CHECK='
+    line: CRON_CHECK=weekly
+
+- name: Base | Copia remota de logs
+  ansible.builtin.copy:
+    dest: /etc/rsyslog.d/90-remoto.conf
+    content: |
+      *.* @{{ syslog_remoto }}:514
+    mode: "0644"
+  when: syslog_remoto | length > 0
+  notify: Reiniciar rsyslog
+
+# Postfix llega como dependencia (rkhunter/apt-listchanges) y escucha en
+# 0.0.0.0:25. Solo hace falta para correo local: se limita a localhost.
+# (Además el 25 se reserva para el honeypot SMTP.)
+- name: Base | ¿Postfix instalado?
+  ansible.builtin.stat:
+    path: /etc/postfix/main.cf
+  register: postfix_cf
+
+- name: Base | Postfix solo en localhost y sin delatar versión
+  ansible.builtin.lineinfile:
+    path: /etc/postfix/main.cf
+    regexp: '^{{ item.k }}\s*='
+    line: "{{ item.k }} = {{ item.v }}"
+  loop:
+    - { k: inet_interfaces,      v: loopback-only }
+    - { k: smtpd_banner,         v: "$myhostname ESMTP" }
+    - { k: disable_vrfy_command, v: "yes" }
+  loop_control:
+    label: "{{ item.k }}"
+  when: postfix_cf.stat.exists
+  notify: Reiniciar postfix
+
+# ── Lynis actualizado (repo oficial de CISOfy, firmado) ────────────
+# El de Ubuntu 22.04 (3.0.7) es viejo y no reconoce controles modernos.
+- name: Base | Llave del repo de CISOfy
+  ansible.builtin.get_url:
+    url: https://packages.cisofy.com/keys/cisofy-software-public.key
+    dest: /etc/apt/keyrings/cisofy.asc
+    mode: "0644"
+
+- name: Base | Repo de Lynis
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/cisofy.asc] https://packages.cisofy.com/community/lynis/deb/ stable main"
+    filename: cisofy-lynis
+    state: present
+
+- name: Base | Lynis a la última versión
+  ansible.builtin.apt:
+    name: lynis
+    state: latest
+    update_cache: true
+
+# ── Limpieza y cuentas ─────────────────────────────────────────────
+- name: Base | Paquetes desinstalados con config residual
+  ansible.builtin.shell: dpkg -l | awk '/^rc/{print $2}'
+  register: rc_pkgs
+  changed_when: false
+
+- name: Base | Purgar config residual (Lynis PKGS-7346)
+  ansible.builtin.command: "dpkg --purge {{ rc_pkgs.stdout_lines | join(' ') }}"
+  when: rc_pkgs.stdout_lines | length > 0
+  changed_when: true
+
+- name: Base | Caducidad de contraseña para cuentas con contraseña (Lynis AUTH-9282)
+  ansible.builtin.command: chage --maxdays 365 --mindays 1 --warndays 14 {{ item }}
+  loop: "{{ [admin_usuario] + ssh_usuarios_con_password | unique }}"
+  changed_when: false
+
+# ── Nombre de dominio (Lynis NAME-4028) ────────────────────────────
+- name: Base | FQDN del server
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1\s'
+    line: "127.0.1.1 {{ ansible_hostname }}.{{ dominio_interno }} {{ ansible_hostname }}"
+
+# ── /home en volumen propio, nodev,nosuid (Lynis FILE-6310) ────────
+- name: Base | ¿/home ya es un volumen aparte?
+  ansible.builtin.command: findmnt -no SOURCE /home
+  register: home_mnt
+  changed_when: false
+  failed_when: false
+
+- name: Base | Volumen lógico para /home
+  community.general.lvol:
+    vg: "{{ docker_lv_vg }}"
+    lv: home
+    size: "{{ home_lv_tam }}"
+    shrink: false
+
+- name: Base | ext4 en el volumen de /home
+  community.general.filesystem:
+    fstype: ext4
+    dev: "/dev/{{ docker_lv_vg }}/home"
+
+# Se copia el /home actual al volumen y se monta encima. raw: el propio
+# Ansible vive en ~/.ansible y no debe quedar a medio montar.
+- name: Base | Migrar /home al volumen nuevo
+  ansible.builtin.raw: |
+    set -e
+    mkdir -p /mnt/home-nuevo
+    mount /dev/{{ docker_lv_vg }}/home /mnt/home-nuevo
+    rsync -aHAX /home/ /mnt/home-nuevo/
+    umount /mnt/home-nuevo && rmdir /mnt/home-nuevo
+    mount -o nodev,nosuid /dev/{{ docker_lv_vg }}/home /home
+  when: home_mnt.stdout == ""
+  changed_when: true
+
+- name: Base | /home persistente con nodev,nosuid
+  ansible.posix.mount:
+    path: /home
+    src: "/dev/{{ docker_lv_vg }}/home"
+    fstype: ext4
+    opts: defaults,nodev,nosuid
+    state: present
+
+# ── Servicios innecesarios (menos superficie de ataque y sin "fallidos" en el monitoreo) ──
+- name: Base | motd-news desactivado (contacta servidores de Canonical; CIS lo recomienda)
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+  loop: [motd-news.timer, motd-news.service]
+  failed_when: false
+
+- name: Base | ¿LXD (snap) instalado?
+  ansible.builtin.command: snap list lxd
+  register: snap_lxd
+  changed_when: false
+  failed_when: false
+
+- name: Base | Quitar LXD (no se usa; Docker es el único motor de contenedores)
+  ansible.builtin.command: snap remove --purge lxd
+  when: snap_lxd.rc == 0
+  changed_when: true
+
+- name: Base | Limpiar unidades fallidas antiguas
+  ansible.builtin.command: systemctl reset-failed
+  changed_when: false

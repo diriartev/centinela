@@ -1,0 +1,94 @@
+{
+  "description": "Centinela: normaliza eventos de los honeypots a ECS y agrega GeoIP/ASN",
+  "processors": [
+    { "drop": { "description": "Dionaea: eventos internos de escucha (no son ataques)", "if": "ctx.hp?.connection?.type == 'listen'" } },
+    { "set": { "field": "event.ingested", "value": "{{{_ingest.timestamp}}}" } },
+    { "script": {
+        "lang": "painless",
+        "tag": "normalizar",
+        "ignore_failure": true,
+        "source": """
+          def first(def m, def keys) { for (def k : keys) { if (m.containsKey(k) && m[k] != null && m[k].toString() != '') { return m[k]; } } return null; }
+          def hp = ctx.hp;
+          if (hp == null) { return; }
+          // IP y puerto de origen
+          def ip = first(hp, ['src_ip','source_ip','peerIP','remote_ip','client_ip','srcip','ip']);
+          def sport = first(hp, ['src_port','source_port','peerPort','remote_port','srcport']);
+          if (ip == null && hp.containsKey('addr') && hp.addr != null) {
+            def a = hp.addr.toString(); int i = a.lastIndexOf(':');
+            if (i > 0) { ip = a.substring(0, i); sport = a.substring(i + 1); } else { ip = a; }
+          }
+          if (ip == null && hp.containsKey('connection') && hp.connection instanceof Map) {
+            ip = first(hp.connection, ['remote_ip','src_ip']); sport = first(hp.connection, ['remote_port','src_port']);
+          }
+          if (ip != null) {
+            if (ctx.source == null) { ctx.source = [:]; }
+            ctx.source.ip = ip.toString().replace('::ffff:', '');
+            if (sport != null) { try { ctx.source.port = Integer.parseInt(sport.toString()); } catch (Exception e) {} }
+          }
+          def dport = first(hp, ['dst_port','dest_port','destination_port','dport','local_port']);
+          if (dport == null && hp.containsKey('connection') && hp.connection instanceof Map) { dport = first(hp.connection, ['local_port']); }
+          if (dport != null) { if (ctx.destination == null) { ctx.destination = [:]; } try { ctx.destination.port = Integer.parseInt(dport.toString()); } catch (Exception e) {} }
+          // Usuario / contraseña / comando / acción
+          if (ctx.destination == null || ctx.destination.port == null) {
+            def porDefecto = ['redishoneypot': 6379, 'mailoney': 25, 'elasticpot': 9200, 'adbhoney': 5555, 'conpot': 10001, 'web': 443];
+            def t = ctx.honeypot?.type;
+            if (t != null && porDefecto.containsKey(t)) { if (ctx.destination == null) { ctx.destination = [:]; } ctx.destination.port = porDefecto[t]; }
+          }
+          if (ctx.honeypot?.type == 'redishoneypot' && hp.action != null && !['NewConnect','Closed'].contains(hp.action.toString())) {
+            ctx.honeypot.command = hp.action.toString();
+          }
+          def user = first(hp, ['username','user','login']);
+          if (user != null) { if (ctx.user == null) { ctx.user = [:]; } ctx.user.name = user.toString(); }
+          def pass = first(hp, ['password','pass']);
+          if (pass != null) { ctx.honeypot.password = pass.toString(); }
+          def cmd = first(hp, ['input','cmd','command','request','data']);
+          if (cmd != null) { ctx.honeypot.command = cmd.toString().length() > 2000 ? cmd.toString().substring(0, 2000) : cmd.toString(); }
+          def act = first(hp, ['eventid','action','event_type','type']);
+          if (act != null) { if (ctx.event == null) { ctx.event = [:]; } ctx.event.action = act.toString(); }
+          def proto = first(hp, ['protocol','transport']);
+          if (proto == null && hp.containsKey('connection') && hp.connection instanceof Map) { proto = first(hp.connection, ['protocol','transport']); }
+          if (proto != null) { if (ctx.network == null) { ctx.network = [:]; } ctx.network.protocol = proto.toString().toLowerCase(); }
+          def msg = first(hp, ['message','msg']);
+          if (msg != null && ctx.message == null) { ctx.message = msg.toString(); }
+          def sha = first(hp, ['shasum','sha256','md5hash','muestra_sha256']);
+          if (sha != null) { ctx.honeypot.file_hash = sha.toString(); }
+          def url = first(hp, ['url','path','uri']);
+          if (url != null) { if (ctx.url == null) { ctx.url = [:]; } ctx.url.original = url.toString(); }
+          def ua = first(hp, ['user_agent','useragent']);
+          if (ua != null) { if (ctx.user_agent == null) { ctx.user_agent = [:]; } ctx.user_agent.original = ua.toString(); }
+          // Web señuelo
+          if (ctx.honeypot?.type == 'web') {
+            if (ctx.http == null) { ctx.http = [:]; }
+            if (hp.method != null) { ctx.http.request = ['method': hp.method]; if (hp.body != null) { ctx.http.request.body = ['content': hp.body]; } }
+            if (hp.status != null) { ctx.http.response = ['status_code': hp.status]; }
+            if (ctx.url == null) { ctx.url = [:]; }
+            if (hp.path != null) { ctx.url.path = hp.path; }
+            if (hp.host != null) { ctx.url.domain = hp.host; }
+            if (hp.trap != null) { ctx.honeypot.trap = hp.trap; }
+            if (hp.sensor != null) { ctx.honeypot.sensor = hp.sensor; }
+            if (hp.honeytoken != null) { ctx.honeypot.honeytoken = hp.honeytoken; }
+            if (hp.url_decoded != null) { ctx.url.original = hp.url_decoded.length() > 2048 ? hp.url_decoded.substring(0, 2048) : hp.url_decoded; }
+            ctx.network = ['protocol': 'http'];
+          }
+          // Campos ECS que manda la web señuelo tal cual
+          if (hp.containsKey('ecs') && hp.ecs instanceof Map) { for (def e : hp.ecs.entrySet()) { ctx[e.getKey()] = e.getValue(); } }
+          def ts = first(hp, ['timestamp','@timestamp','time']);
+          if (ts != null) { ctx.hp_ts = ts.toString(); }
+        """
+    } },
+    { "date": { "field": "hp_ts", "target_field": "@timestamp", "formats": ["ISO8601", "yyyy-MM-dd HH:mm:ss.SSSSSS", "yyyy-MM-dd HH:mm:ss", "UNIX"], "ignore_failure": true } },
+    { "remove": { "field": ["hp_ts"], "ignore_missing": true } },
+    { "set": { "field": "event.category", "value": ["intrusion_detection"] } },
+    { "set": { "field": "event.kind", "value": "event" } },
+    { "geoip": { "field": "source.ip", "target_field": "source.geo", "database_file": "GeoLite2-City.mmdb", "ignore_missing": true, "ignore_failure": true,
+                 "properties": ["continent_name", "country_name", "country_iso_code", "region_name", "city_name", "location"] } },
+    { "geoip": { "field": "source.ip", "target_field": "source.as", "database_file": "GeoLite2-ASN.mmdb", "ignore_missing": true, "ignore_failure": true,
+                 "properties": ["asn", "organization_name"] } },
+    { "rename": { "field": "source.as.asn", "target_field": "source.as.number", "ignore_missing": true, "ignore_failure": true } },
+    { "rename": { "field": "source.as.organization_name", "target_field": "source.as.organization.name", "ignore_missing": true, "ignore_failure": true } },
+    { "set": { "field": "source.geo.country_name", "value": "Red interna (prueba)", "if": "ctx.source?.ip != null && (ctx.source.ip.startsWith('10.') || ctx.source.ip.startsWith('192.168.') || ctx.source.ip.startsWith('127.'))" } },
+    { "community_id": { "ignore_failure": true, "ignore_missing": true } }
+  ],
+  "on_failure": [ { "set": { "field": "error.message", "value": "{{{ _ingest.on_failure_message }}}" } } ]
+}

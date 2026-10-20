@@ -1,0 +1,1881 @@
+{
+ "description": "Centinela: normaliza eventos de los honeypots a ECS y agrega GeoIP/ASN",
+ "processors": [
+  {
+   "drop": {
+    "description": "Dionaea: eventos internos de escucha (no son ataques)",
+    "if": "ctx.hp?.connection?.type == 'listen'"
+   }
+  },
+  {
+   "set": {
+    "field": "event.ingested",
+    "value": "{{{_ingest.timestamp}}}"
+   }
+  },
+  {
+   "script": {
+    "lang": "painless",
+    "tag": "normalizar",
+    "ignore_failure": true,
+    "source": "\n          def first(def m, def keys) { for (def k : keys) { if (m.containsKey(k) && m[k] != null && m[k].toString() != '') { return m[k]; } } return null; }\n          def hp = ctx.hp;\n          if (hp == null) { return; }\n          // IP y puerto de origen\n          def ip = first(hp, ['src_ip','source_ip','peerIP','remote_ip','client_ip','srcip','ip']);\n          def sport = first(hp, ['src_port','source_port','peerPort','remote_port','srcport']);\n          if (ip == null && hp.containsKey('addr') && hp.addr != null) {\n            def a = hp.addr.toString(); int i = a.lastIndexOf(':');\n            if (i > 0) { ip = a.substring(0, i); sport = a.substring(i + 1); } else { ip = a; }\n          }\n          if (ip == null && hp.containsKey('connection') && hp.connection instanceof Map) {\n            ip = first(hp.connection, ['remote_ip','src_ip']); sport = first(hp.connection, ['remote_port','src_port']);\n          }\n          if (ip != null) {\n            if (ctx.source == null) { ctx.source = [:]; }\n            ctx.source.ip = ip.toString().replace('::ffff:', '');\n            if (sport != null) { try { ctx.source.port = Integer.parseInt(sport.toString()); } catch (Exception e) {} }\n          }\n          def dport = first(hp, ['dst_port','dest_port','destination_port','dport','local_port']);\n          if (dport == null && hp.containsKey('connection') && hp.connection instanceof Map) { dport = first(hp.connection, ['local_port']); }\n          if (dport != null) { if (ctx.destination == null) { ctx.destination = [:]; } try { ctx.destination.port = Integer.parseInt(dport.toString()); } catch (Exception e) {} }\n          // Usuario / contraseña / comando / acción\n          if (ctx.destination == null || ctx.destination.port == null) {\n            def porDefecto = ['redishoneypot': 6379, 'mailoney': 25, 'elasticpot': 9200, 'adbhoney': 5555, 'conpot': 10001, 'web': 443];\n            def t = ctx.honeypot?.type;\n            if (t != null && porDefecto.containsKey(t)) { if (ctx.destination == null) { ctx.destination = [:]; } ctx.destination.port = porDefecto[t]; }\n          }\n          if (ctx.honeypot?.type == 'redishoneypot' && hp.action != null && !['NewConnect','Closed'].contains(hp.action.toString())) {\n            ctx.honeypot.command = hp.action.toString();\n          }\n          def user = first(hp, ['username','user','login']);\n          if (user != null) { if (ctx.user == null) { ctx.user = [:]; } ctx.user.name = user.toString(); }\n          def pass = first(hp, ['password','pass']);\n          if (pass != null) { ctx.honeypot.password = pass.toString(); }\n          def cmd = first(hp, ['input','cmd','command','request','data']);\n          if (cmd != null) { ctx.honeypot.command = cmd.toString().length() > 2000 ? cmd.toString().substring(0, 2000) : cmd.toString(); }\n          def act = first(hp, ['eventid','action','event_type','type']);\n          if (act != null) { if (ctx.event == null) { ctx.event = [:]; } ctx.event.action = act.toString(); }\n          def proto = first(hp, ['protocol','transport']);\n          if (proto == null && hp.containsKey('connection') && hp.connection instanceof Map) { proto = first(hp.connection, ['protocol','transport']); }\n          if (proto != null) { if (ctx.network == null) { ctx.network = [:]; } ctx.network.protocol = proto.toString().toLowerCase(); }\n          def msg = first(hp, ['message','msg']);\n          if (msg != null && ctx.message == null) { ctx.message = msg.toString(); }\n          def sha = first(hp, ['shasum','sha256','md5hash','muestra_sha256']);\n          if (sha != null) { ctx.honeypot.file_hash = sha.toString(); }\n          def url = first(hp, ['url','path','uri']);\n          if (url != null) { if (ctx.url == null) { ctx.url = [:]; } ctx.url.original = url.toString(); }\n          def ua = first(hp, ['user_agent','useragent']);\n          if (ua != null) { if (ctx.user_agent == null) { ctx.user_agent = [:]; } ctx.user_agent.original = ua.toString(); }\n          // Web señuelo\n          if (ctx.honeypot?.type == 'web') {\n            if (ctx.http == null) { ctx.http = [:]; }\n            if (hp.method != null) { ctx.http.request = ['method': hp.method]; if (hp.body != null) { ctx.http.request.body = ['content': hp.body]; } }\n            if (hp.status != null) { ctx.http.response = ['status_code': hp.status]; }\n            if (ctx.url == null) { ctx.url = [:]; }\n            if (hp.path != null) { ctx.url.path = hp.path; }\n            if (hp.host != null) { ctx.url.domain = hp.host; }\n            if (hp.trap != null) { ctx.honeypot.trap = hp.trap; }\n            if (hp.sensor != null) { ctx.honeypot.sensor = hp.sensor; }\n            if (hp.honeytoken != null) { ctx.honeypot.honeytoken = hp.honeytoken; }\n            if (hp.url_decoded != null) { ctx.url.original = hp.url_decoded.length() > 2048 ? hp.url_decoded.substring(0, 2048) : hp.url_decoded; }\n            ctx.network = ['protocol': 'http'];\n          }\n          // Campos ECS que manda la web señuelo tal cual\n          if (hp.containsKey('ecs') && hp.ecs instanceof Map) { for (def e : hp.ecs.entrySet()) { ctx[e.getKey()] = e.getValue(); } }\n          def ts = first(hp, ['timestamp','@timestamp','time']);\n          if (ts != null) { ctx.hp_ts = ts.toString(); }\n        "
+   }
+  },
+  {
+   "date": {
+    "field": "hp_ts",
+    "target_field": "@timestamp",
+    "formats": [
+     "ISO8601",
+     "yyyy-MM-dd HH:mm:ss.SSSSSS",
+     "yyyy-MM-dd HH:mm:ss",
+     "UNIX"
+    ],
+    "ignore_failure": true
+   }
+  },
+  {
+   "script": {
+    "lang": "painless",
+    "tag": "clasificar",
+    "ignore_failure": true,
+    "description": "Clasifica el ataque (reglas Centinela + trampas T-Pot) y lo explica en español",
+    "source": "// Centinela · Clasificador de ataques (se ejecuta en el pipeline de ingesta \"honeypot\").\n// Las reglas llegan en params.reglas (generadas desde reglas_ataques.yml + trampas de h0neytr4p).\n// Resultado: ctx.ataque.* (explicación en español), ctx.threat.* (MITRE ATT&CK) y ctx.event.severity.\n\nString bajo(def v) { return v == null ? '' : v.toString().toLowerCase(); }\n\n// Comodín simple: '*' = cualquier secuencia de caracteres\nboolean comodin(String p, String s) {\n  int pi = 0; int si = 0; int estrella = -1; int marca = 0;\n  while (si < s.length()) {\n    if (pi < p.length() && p.charAt(pi) != (char)'*' && p.charAt(pi) == s.charAt(si)) { pi++; si++; }\n    else if (pi < p.length() && p.charAt(pi) == (char)'*') { estrella = pi; marca = si; pi++; }\n    else if (estrella != -1) { pi = estrella + 1; marca++; si = marca; }\n    else { return false; }\n  }\n  while (pi < p.length() && p.charAt(pi) == (char)'*') { pi++; }\n  return pi == p.length();\n}\n\ndef hp = ctx.hp;\nif (hp == null) { hp = [:]; }\n\n// Textos donde se busca (en minúsculas)\nString url = bajo(hp.url_decoded != null ? hp.url_decoded : (ctx.url?.original));\nString ruta = bajo(hp.path_decoded != null ? hp.path_decoded : (ctx.url?.path));\nString cuerpo = bajo(hp.body_decoded != null ? hp.body_decoded : ctx.http?.request?.body?.content);\nString cmd = bajo(ctx.honeypot?.command);\nString ua = bajo(ctx.user_agent?.original);\nString cb = '';\nif (hp.headers instanceof Map) {\n  for (def e : hp.headers.entrySet()) { cb += e.getKey().toString() + ': ' + String.valueOf(e.getValue()) + \" ␟ \"; }\n}\nString cabeceras = bajo(cb);\nString accion = bajo(ctx.event?.action) + ' ' + bajo(ctx.honeypot?.trap) + ' ' + bajo(ctx.network?.protocol);\nMap textos = ['url': url, 'cuerpo': cuerpo, 'cmd': cmd, 'ua': ua, 'cabeceras': cabeceras, 'accion': accion];\nString todo = url + \" ␟ \" + cuerpo + \" ␟ \" + cmd + \" ␟ \" + ua + \" ␟ \" + cabeceras + \" ␟ \" + accion;\n\nString tipo = ctx.honeypot?.type;\nString metodo = ctx.http?.request?.method == null ? '' : ctx.http.request.method.toString().toUpperCase();\ndef puerto = ctx.destination?.port;\nSet campos = new HashSet();\nif (ctx.honeypot?.password != null) { campos.add('password'); }\nif (ctx.honeypot?.honeytoken != null) { campos.add('honeytoken'); }\nif (ctx.http?.response?.status_code != null && ctx.http.response.status_code.toString() == '404') { campos.add('http_404'); }\n\nList hits = new ArrayList();\nfor (def r : params.reglas) {\n  if (r.hp != null && (tipo == null || !r.hp.contains(tipo))) { continue; }\n  if (r.pt != null && (puerto == null || !r.pt.contains(puerto))) { continue; }\n  if (r.me != null && r.me != '*' && r.me != metodo) { continue; }\n  if (r.campo != null && !campos.contains(r.campo)) { continue; }\n  String hay = todo;\n  if (r.en != null) {\n    hay = '';\n    for (def e : r.en) { hay += textos.get(e) + \" ␟ \"; }\n  }\n  boolean ok = true;\n  if (r.any != null) {\n    ok = false;\n    for (def t : r.any) { if (hay.contains(t)) { ok = true; break; } }\n  }\n  if (ok && r.grp != null) {\n    for (def g : r.grp) {\n      boolean alguno = false;\n      for (def t : g) { if (hay.contains(t)) { alguno = true; break; } }\n      if (!alguno) { ok = false; break; }\n    }\n  }\n  if (ok && r.glob != null) {\n    boolean alguno = false;\n    for (def g : r.glob) { if (comodin(g, ruta) || comodin(g, url)) { alguno = true; break; } }\n    ok = alguno;\n  }\n  if (ok) { hits.add(r); }\n}\n\nif (hits.size() > 0) {\n  def mejor = hits.get(0);\n  // gana la más grave; si empatan, la que tiene un CVE concreto (más específica)\n  for (def r : hits) { if (r.s > mejor.s || (r.s == mejor.s && r.cve != null && mejor.cve == null)) { mejor = r; } }\n  List ids = new ArrayList(); List nombres = new ArrayList(); List categorias = new ArrayList();\n  for (def r : hits) {\n    if (!ids.contains(r.id)) { ids.add(r.id); }\n    if (!nombres.contains(r.n)) { nombres.add(r.n); }\n    if (!categorias.contains(r.c)) { categorias.add(r.c); }\n  }\n  List txt = ['', 'baja', 'media', 'alta', 'critica'];\n  Map a = ['id': mejor.id, 'nombre': mejor.n, 'categoria': mejor.c, 'severidad': mejor.s, 'severidad_txt': txt.get(mejor.s),\n           'explicacion': mejor.ex, 'recomendacion': mejor.re, 'ids': ids, 'nombres': nombres, 'categorias': categorias,\n           'fuente': mejor.f];\n  if (mejor.cve != null) { a.cve = mejor.cve; }\n  if (mejor.ref != null) { a.referencias = mejor.ref; }\n  ctx.ataque = a;\n  ctx.threat = ['framework': 'MITRE ATT&CK', 'tactic': ['name': mejor.ta], 'technique': ['id': mejor.ti, 'name': mejor.te]];\n  if (ctx.event == null) { ctx.event = [:]; }\n  ctx.event.severity = mejor.s;\n\n  // URLs de descarga de malware (para capturar la muestra): solo en ataques de severidad alta o crítica\n  if (mejor.s >= 3) {\n    String o = '';\n    if (ctx.honeypot?.command != null) { o += ctx.honeypot.command.toString() + ' '; }\n    if (hp.body_decoded != null) { o += hp.body_decoded.toString() + ' '; }\n    else if (ctx.http?.request?.body?.content != null) { o += ctx.http.request.body.content.toString() + ' '; }\n    if (hp.url_decoded != null) { o += hp.url_decoded.toString() + ' '; }\n    if (hp.headers instanceof Map) { for (def e : hp.headers.entrySet()) { o += String.valueOf(e.getValue()) + ' '; } }\n    if (o.length() > 20000) { o = o.substring(0, 20000); }\n    List urls = new ArrayList();\n    def m = /(?:https?|ftp|tftp|ldaps?|rmi):\\/\\/[A-Za-z0-9._~:\\/?#\\[\\]@!$&*+,=%-]+/.matcher(o);\n    while (m.find() && urls.size() < 8) {\n      String u = m.group();\n      while (u.length() > 0 && (u.endsWith(')') || u.endsWith('.') || u.endsWith(',') || u.endsWith('}'))) { u = u.substring(0, u.length() - 1); }\n      String ul = u.toLowerCase();\n      if (ul.contains('example.com') || ul.contains('://127.') || ul.contains('://localhost') || ul.contains('://10.213.')) { continue; }\n      if (!urls.contains(u)) { urls.add(u); }\n    }\n    if (urls.size() > 0) { ctx.ataque.urls = urls; }\n  }\n}\n",
+    "params": {
+     "reglas": [
+      {
+       "id": "honeytoken",
+       "n": "Uso de credencial señuelo (honeytoken)",
+       "c": "Uso de secretos robados",
+       "s": 4,
+       "ta": "Credential Access",
+       "ti": "T1552.001",
+       "te": "Unsecured Credentials: Credentials In Files",
+       "ex": "El atacante usó una clave, token o contraseña que solo existe en los archivos falsos que dejamos expuestos a propósito (.env, configuración). Significa que alguien leyó el archivo y ahora intenta entrar con lo que robó: es un atacante interesado, no un simple escáner.",
+       "re": "Revisar todo lo que hizo esa IP; es actividad dirigida. Ningún dato real está comprometido.",
+       "f": "Centinela",
+       "campo": "honeytoken"
+      },
+      {
+       "id": "dropper",
+       "n": "Descarga y ejecución de malware (dropper)",
+       "c": "Descarga de malware",
+       "s": 4,
+       "ta": "Command and Control",
+       "ti": "T1105",
+       "te": "Ingress Tool Transfer",
+       "ex": "El atacante intenta que el servidor descargue un programa o script desde internet y lo ejecute. Es la forma típica de instalar bots (Mirai, Gafgyt), mineros o puertas traseras. La URL del archivo queda guardada y el bot de Telegram intenta capturar la muestra.",
+       "re": "Consultar el hash de la muestra en VirusTotal/MalwareBazaar y bloquear el dominio o la IP de origen.",
+       "f": "Centinela",
+       "en": [
+        "cmd",
+        "cuerpo",
+        "url",
+        "cabeceras"
+       ],
+       "grp": [
+        [
+         "wget",
+         "curl",
+         "tftp",
+         "ftpget",
+         "/dev/tcp",
+         "lwp-download",
+         "fetch "
+        ],
+        [
+         "http",
+         "ftp://",
+         "tftp",
+         "/dev/tcp"
+        ]
+       ]
+      },
+      {
+       "id": "mineria",
+       "n": "Minería de criptomonedas",
+       "c": "Abuso de recursos",
+       "s": 4,
+       "ta": "Impact",
+       "ti": "T1496",
+       "te": "Resource Hijacking",
+       "ex": "Intento de instalar un minero de criptomonedas (casi siempre Monero). El atacante quiere usar la CPU del servidor para ganar dinero; es una de las motivaciones más comunes de los ataques automáticos.",
+       "re": "Bloquear los pools de minería en el firewall de salida (en nuestra infra ya no hay salida).",
+       "f": "Centinela",
+       "en": [
+        "cmd",
+        "cuerpo",
+        "url"
+       ],
+       "any": [
+        "xmrig",
+        "stratum+tcp",
+        "stratum+ssl",
+        "minerd",
+        "cpuminer",
+        "nicehash",
+        "monero",
+        "xmr.",
+        "c3pool",
+        "supportxmr",
+        "kdevtmpfsi",
+        "kinsing"
+       ]
+      },
+      {
+       "id": "botnet-iot",
+       "n": "Infección de botnet IoT (Mirai y variantes)",
+       "c": "Botnet",
+       "s": 4,
+       "ta": "Execution",
+       "ti": "T1059.004",
+       "te": "Command and Scripting Interpreter: Unix Shell",
+       "ex": "Patrón clásico de botnets de dispositivos IoT: prueban si el equipo tiene BusyBox, descargan una versión del bot para cada arquitectura (arm, mips, x86) y lo ejecutan. Los equipos infectados se usan para ataques DDoS. Es tráfico 100% automatizado.",
+       "re": "Nada que hacer en nuestra infra; útil como inteligencia (IPs y URLs de la botnet).",
+       "f": "Centinela",
+       "en": [
+        "cmd",
+        "cuerpo",
+        "url"
+       ],
+       "any": [
+        "/bin/busybox",
+        "mirai",
+        "mozi",
+        "gafgyt",
+        "bashlite",
+        ".arm7",
+        ".mips",
+        ".mpsl",
+        ".x86_64",
+        "tsunami",
+        "hajime",
+        "okiru",
+        "sora.",
+        "condi"
+       ]
+      },
+      {
+       "id": "webshell",
+       "n": "Subida o uso de webshell",
+       "c": "Persistencia",
+       "s": 4,
+       "ta": "Persistence",
+       "ti": "T1505.003",
+       "te": "Server Software Component: Web Shell",
+       "ex": "El atacante intenta subir o usar una \"webshell\": un archivo (PHP, JSP, ASPX) que le permite ejecutar comandos en el servidor desde el navegador. Si lo lograra, tendría control remoto permanente.",
+       "re": "En un servidor real, revisar los directorios subibles y bloquear la ejecución de scripts en ellos.",
+       "f": "Centinela",
+       "en": [
+        "url",
+        "cuerpo"
+       ],
+       "any": [
+        "eval(",
+        "base64_decode(",
+        "system($_",
+        "shell_exec(",
+        "passthru(",
+        "assert($_",
+        "<?php",
+        "c99.php",
+        "r57.php",
+        "wso.php",
+        "alfa.php",
+        "cmd.jsp",
+        "cmd.aspx",
+        "?cmd=",
+        "&cmd="
+       ]
+      },
+      {
+       "id": "comando-remoto",
+       "n": "Inyección de comandos del sistema",
+       "c": "Ejecución de código",
+       "s": 3,
+       "ta": "Execution",
+       "ti": "T1059",
+       "te": "Command and Scripting Interpreter",
+       "ex": "Se envía un comando de sistema dentro de un parámetro web esperando que la aplicación lo ejecute (inyección de comandos / RCE). Es como \"colarle\" una orden al servidor en un formulario o en la URL.",
+       "re": "Validar y escapar siempre la entrada; nunca pasar parámetros del usuario a la consola.",
+       "f": "Centinela",
+       "en": [
+        "url",
+        "cuerpo",
+        "cabeceras"
+       ],
+       "any": [
+        ";id;",
+        ";id ",
+        "$(id)",
+        "`id`",
+        ";uname",
+        "$(uname",
+        "|uname",
+        ";cat /etc/passwd",
+        "&&cat ",
+        ";ls -la",
+        "${ifs}",
+        "$ifs",
+        "nc -e",
+        "/bin/sh -c",
+        "sh -c ",
+        "bash -c",
+        "cmd.exe",
+        "powershell"
+       ],
+       "hp": [
+        "web"
+       ]
+      },
+      {
+       "id": "log4shell",
+       "n": "Log4Shell",
+       "c": "Explotación de vulnerabilidad",
+       "s": 4,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Explotación de Log4Shell, la vulnerabilidad de Java (Log4j) que en 2021 afectó a medio internet. El atacante mete el texto \"${jndi:...}\" en cabeceras o parámetros: si el servidor lo registra con Log4j vulnerable, se conecta a la máquina del atacante y ejecuta su código.",
+       "re": "Actualizar Log4j a 2.17+; en nuestra infra no hay Java expuesto (es un señuelo).",
+       "f": "Centinela",
+       "cve": "CVE-2021-44228",
+       "any": [
+        "${jndi:",
+        "jndi:ldap",
+        "jndi:rmi",
+        "jndi:dns",
+        "${lower:",
+        "${upper:",
+        "${::-j}",
+        "${env:",
+        "${sys:"
+       ]
+      },
+      {
+       "id": "spring4shell",
+       "n": "Spring4Shell / Spring Cloud RCE",
+       "c": "Explotación de vulnerabilidad",
+       "s": 4,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar Spring4Shell o Spring Cloud Function: vulnerabilidades del framework Java Spring que permiten escribir un archivo malicioso o ejecutar código enviando parámetros especiales.",
+       "re": "Actualizar Spring Framework/Cloud Function a versiones corregidas.",
+       "f": "Centinela",
+       "cve": "CVE-2022-22965",
+       "en": [
+        "url",
+        "cuerpo"
+       ],
+       "any": [
+        "class.module.classloader",
+        "spring.cloud.function.routing-expression",
+        "class.classloader"
+       ]
+      },
+      {
+       "id": "phpunit-rce",
+       "n": "RCE en PHPUnit (eval-stdin.php)",
+       "c": "Explotación de vulnerabilidad",
+       "s": 4,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Busca el archivo eval-stdin.php de PHPUnit, que en versiones viejas ejecuta cualquier código PHP que se le envíe. Muchos sitios lo dejan publicado por error dentro de la carpeta \"vendor\".",
+       "re": "Nunca publicar la carpeta vendor/ en el servidor web.",
+       "f": "Centinela",
+       "cve": "CVE-2017-9841",
+       "en": [
+        "url"
+       ],
+       "any": [
+        "eval-stdin.php"
+       ]
+      },
+      {
+       "id": "thinkphp-rce",
+       "n": "RCE en ThinkPHP",
+       "c": "Explotación de vulnerabilidad",
+       "s": 3,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Ataque contra el framework chino ThinkPHP: una ruta especial permite llamar funciones internas de PHP y ejecutar comandos. Lo usan mucho las botnets para infectar servidores web.",
+       "re": "Actualizar ThinkPHP; bloquear rutas con \"invokefunction\" en el WAF.",
+       "f": "Centinela",
+       "cve": "CVE-2018-20062",
+       "en": [
+        "url",
+        "cuerpo"
+       ],
+       "any": [
+        "invokefunction",
+        "think\\app",
+        "call_user_func_array",
+        "s=/index/\\think"
+       ]
+      },
+      {
+       "id": "path-traversal",
+       "n": "Recorrido de directorios (path traversal / LFI)",
+       "c": "Explotación de vulnerabilidad",
+       "s": 3,
+       "ta": "Discovery",
+       "ti": "T1083",
+       "te": "File and Directory Discovery",
+       "ex": "El atacante usa \"../\" o rutas como /etc/passwd para salirse de la carpeta web y leer archivos del sistema (contraseñas, configuración). Se llama path traversal o inclusión local de archivos (LFI).",
+       "re": "Normalizar rutas y no construir nombres de archivo con datos del usuario.",
+       "f": "Centinela",
+       "en": [
+        "url",
+        "cuerpo"
+       ],
+       "any": [
+        "../",
+        "..\\",
+        "%2e%2e",
+        "/etc/passwd",
+        "/etc/shadow",
+        "win.ini",
+        "boot.ini",
+        "/proc/self/environ",
+        "php://filter",
+        "php://input",
+        "file:///"
+       ],
+       "hp": [
+        "web"
+       ]
+      },
+      {
+       "id": "apache-traversal",
+       "n": "Path traversal en Apache 2.4.49/50",
+       "c": "Explotación de vulnerabilidad",
+       "s": 4,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Vulnerabilidad de Apache 2.4.49/2.4.50: con \"/.%2e/\" se escapa del directorio web y, si CGI está activo, se ejecutan comandos. Muy escaneada desde 2021.",
+       "re": "Actualizar Apache a 2.4.51 o superior.",
+       "f": "Centinela",
+       "cve": "CVE-2021-41773",
+       "en": [
+        "url"
+       ],
+       "any": [
+        "/cgi-bin/.%2e/",
+        "/icons/.%2e/",
+        "/cgi-bin/../../",
+        "/.%%32%65/",
+        "%%32%65"
+       ]
+      },
+      {
+       "id": "sqli",
+       "n": "Inyección SQL",
+       "c": "Explotación de vulnerabilidad",
+       "s": 3,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Inyección SQL: el atacante mete código de base de datos en un campo o parámetro para saltarse el login, leer tablas completas o borrar datos. Es una de las vulnerabilidades web más antiguas y comunes.",
+       "re": "Usar consultas parametrizadas; nunca concatenar texto del usuario en SQL.",
+       "f": "Centinela",
+       "en": [
+        "url",
+        "cuerpo"
+       ],
+       "any": [
+        "union select",
+        "union all select",
+        "' or '1'='1",
+        "\" or \"1\"=\"1",
+        "or 1=1",
+        "sleep(",
+        "benchmark(",
+        "information_schema",
+        "waitfor delay",
+        "extractvalue(",
+        "updatexml(",
+        "xp_cmdshell",
+        "' and 1=",
+        "pg_sleep"
+       ],
+       "hp": [
+        "web"
+       ]
+      },
+      {
+       "id": "xss",
+       "n": "Cross-Site Scripting (XSS)",
+       "c": "Explotación de vulnerabilidad",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1189",
+       "te": "Drive-by Compromise",
+       "ex": "Intento de inyectar JavaScript en la página para que se ejecute en el navegador de otros usuarios (robar sesiones, redirigir a sitios falsos). Suele ser un escáner probando si la web refleja lo que recibe.",
+       "re": "Escapar la salida HTML y usar Content-Security-Policy.",
+       "f": "Centinela",
+       "en": [
+        "url",
+        "cuerpo"
+       ],
+       "any": [
+        "<script",
+        "javascript:",
+        "onerror=",
+        "onload=",
+        "alert(",
+        "document.cookie",
+        "<svg/onload",
+        "<img src=x"
+       ],
+       "hp": [
+        "web"
+       ]
+      },
+      {
+       "id": "ssrf-metadata",
+       "n": "SSRF hacia metadatos de la nube",
+       "c": "Explotación de vulnerabilidad",
+       "s": 3,
+       "ta": "Credential Access",
+       "ti": "T1552.005",
+       "te": "Unsecured Credentials: Cloud Instance Metadata API",
+       "ex": "El atacante intenta que el servidor consulte la dirección interna de metadatos de AWS/GCP/Azure, donde viven credenciales temporales de la nube. Si funcionara, se llevaría llaves de la cuenta cloud.",
+       "re": "Usar IMDSv2 en AWS y filtrar peticiones salientes de las aplicaciones.",
+       "f": "Centinela",
+       "en": [
+        "url",
+        "cuerpo",
+        "cabeceras"
+       ],
+       "any": [
+        "169.254.169.254",
+        "metadata.google.internal",
+        "/latest/meta-data",
+        "100.100.100.200",
+        "metadata/instance"
+       ]
+      },
+      {
+       "id": "citrix-cve",
+       "n": "Citrix ADC / Gateway (Shitrix)",
+       "c": "Explotación de vulnerabilidad",
+       "s": 4,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Ataque contra el VPN de Citrix (NetScaler). La falla CVE-2019-19781 permite, con un \"../\", escribir plantillas en el equipo y ejecutar comandos sin contraseña. Se usó en ataques de ransomware reales.",
+       "re": "Parchear Citrix ADC; nuestro \"vpn.\" es un sensor que imita el portal.",
+       "f": "Centinela",
+       "cve": "CVE-2019-19781",
+       "en": [
+        "url"
+       ],
+       "any": [
+        "/vpns/",
+        "/vpn/../",
+        "/vpn/../vpns",
+        "newbm.pl",
+        "/vpns/cfg/smb.conf"
+       ]
+      },
+      {
+       "id": "vpn-appliance",
+       "n": "Explotación de VPN / firewall corporativo",
+       "c": "Explotación de vulnerabilidad",
+       "s": 4,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Prueba de fallas en VPNs y equipos de borde (Fortinet, Pulse/Ivanti, F5 BIG-IP, Cisco ASA, Palo Alto, Exchange, VMware). Son la puerta de entrada favorita de grupos de ransomware y APT porque dan acceso directo a la red interna de una empresa.",
+       "re": "Mantener parcheados los equipos de borde y no publicar sus paneles de administración.",
+       "f": "Centinela",
+       "en": [
+        "url"
+       ],
+       "any": [
+        "/remote/fgt_lang",
+        "/dana-na/",
+        "/dana-cached/",
+        "/tmui/login.jsp",
+        "/mgmt/tm/util/bash",
+        "/+cscoe+/",
+        "/+cscot+/",
+        "/global-protect/",
+        "/ssl-vpn/",
+        "/api/fabric/device/status",
+        "/remote/logincheck",
+        "/owa/auth/",
+        "/autodiscover/autodiscover.json",
+        "/ecp/",
+        "/mifs/",
+        "/ui/vropspluginui/"
+       ]
+      },
+      {
+       "id": "iot-router",
+       "n": "Explotación de router / cámara IoT",
+       "c": "Explotación de vulnerabilidad",
+       "s": 3,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Ataque contra routers, cámaras y equipos domésticos (Huawei, D-Link, TP-Link, Hikvision, GPON…). Las botnets escanean internet completo buscando estos equipos para sumarlos a su red de ataques DDoS.",
+       "re": "Cambiar contraseñas por defecto y actualizar el firmware de los equipos IoT.",
+       "f": "Centinela",
+       "en": [
+        "url",
+        "cuerpo"
+       ],
+       "any": [
+        "/boaform/",
+        "/gponform/",
+        "/hnap1",
+        "/cgi-bin/luci",
+        "/setup.cgi",
+        "/shell?",
+        "/goform/",
+        "/tmunblock.cgi",
+        "/picsdesc.xml",
+        "/ctrlt/devicetest",
+        "/userrpm/",
+        "/cgi-bin/mainfunction.cgi",
+        "/language/swedish",
+        "/sdk/weblanguage",
+        "/onvif/",
+        "/cgi-bin/nobody"
+       ]
+      },
+      {
+       "id": "docker-k8s-api",
+       "n": "Búsqueda de API de Docker / Kubernetes expuesta",
+       "c": "Explotación de vulnerabilidad",
+       "s": 3,
+       "ta": "Execution",
+       "ti": "T1610",
+       "te": "Deploy Container",
+       "ex": "El atacante busca la API de Docker o Kubernetes abierta sin contraseña. Si existe, crea un contenedor con acceso al servidor anfitrión y lo toma por completo (muy usado por mineros como TeamTNT).",
+       "re": "Nunca exponer el socket de Docker ni la API de Kubernetes a internet.",
+       "f": "Centinela",
+       "en": [
+        "url"
+       ],
+       "any": [
+        "/containers/json",
+        "/containers/create",
+        "/v1.24/",
+        "/v1.40/",
+        "/images/create",
+        "/api/v1/pods",
+        "/apis/apps/v1",
+        "/version?",
+        "/kubelet",
+        "/api/v1/namespaces"
+       ]
+      },
+      {
+       "id": "deserializacion",
+       "n": "Deserialización insegura",
+       "c": "Explotación de vulnerabilidad",
+       "s": 3,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Se envían objetos serializados (Java, PHP) manipulados. Al \"reconstruirlos\", la aplicación vulnerable termina ejecutando código del atacante.",
+       "re": "No deserializar datos que vengan del usuario; usar formatos simples como JSON.",
+       "f": "Centinela",
+       "en": [
+        "url",
+        "cuerpo",
+        "cabeceras"
+       ],
+       "any": [
+        "ro0ab",
+        "aced0005",
+        "o:8:\"",
+        "o:4:\"",
+        "__wakeup",
+        "ysoserial",
+        "java.lang.runtime",
+        "objectinputstream",
+        "%24%7b",
+        "rememberme=deleteme"
+       ]
+      },
+      {
+       "id": "ognl-confluence",
+       "n": "Inyección OGNL (Confluence / Struts)",
+       "c": "Explotación de vulnerabilidad",
+       "s": 4,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Inyección de expresiones OGNL usada contra Atlassian Confluence y Apache Struts (la falla de Equifax). Permite ejecutar comandos del sistema con una sola petición.",
+       "re": "Actualizar Confluence/Struts; bloquear \"${\" y \"%{\" en el WAF.",
+       "f": "Centinela",
+       "cve": "CVE-2022-26134",
+       "en": [
+        "url",
+        "cuerpo",
+        "cabeceras"
+       ],
+       "any": [
+        "%{(",
+        "${(#",
+        "@java.lang.runtime@",
+        "ognl",
+        "#_memberaccess",
+        "/struts2",
+        ".action?"
+       ]
+      },
+      {
+       "id": "secretos-expuestos",
+       "n": "Búsqueda de secretos y configuración expuesta",
+       "c": "Exposición de secretos",
+       "s": 3,
+       "ta": "Credential Access",
+       "ti": "T1552.001",
+       "te": "Unsecured Credentials: Credentials In Files",
+       "ex": "Búsqueda de archivos que los desarrolladores dejan publicados por error: .env, .git, llaves SSH, credenciales de AWS o la configuración de WordPress. Un solo archivo así puede entregar las contraseñas de la base de datos o de la nube. Es lo más buscado en internet hoy.",
+       "re": "Nunca desplegar .env/.git en la carpeta pública; rotar cualquier secreto que haya quedado expuesto.",
+       "f": "Centinela",
+       "en": [
+        "url"
+       ],
+       "any": [
+        "/.env",
+        "/.git/",
+        "/.aws/credentials",
+        "/.ssh/",
+        "id_rsa",
+        "/config.json",
+        "/wp-config.php",
+        "/configuration.php",
+        "/.docker/config.json",
+        "/.npmrc",
+        "/.svn/",
+        "/.ds_store",
+        "/settings.py",
+        "/appsettings.json",
+        "/application.yml",
+        "/credentials",
+        "/.htpasswd",
+        "/web.config",
+        "/phpinfo",
+        "/info.php",
+        "/.vscode/sftp.json",
+        "/sftp-config.json"
+       ]
+      },
+      {
+       "id": "backups",
+       "n": "Búsqueda de copias de seguridad",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Collection",
+       "ti": "T1530",
+       "te": "Data from Cloud Storage",
+       "ex": "Prueba nombres típicos de respaldos (backup.zip, db.sql, sitio.tar.gz). Si alguno existe, el atacante se lleva la base de datos o el código fuente completos sin necesidad de \"hackear\" nada.",
+       "re": "Guardar los respaldos fuera de la carpeta web y cifrados.",
+       "f": "Centinela",
+       "en": [
+        "url"
+       ],
+       "any": [
+        ".sql",
+        ".bak",
+        ".zip",
+        ".tar.gz",
+        ".tgz",
+        ".rar",
+        ".7z",
+        ".old",
+        ".swp",
+        "/backup",
+        "/dump",
+        "~"
+       ],
+       "hp": [
+        "web"
+       ]
+      },
+      {
+       "id": "actuator",
+       "n": "Endpoints de diagnóstico expuestos (Actuator, debug)",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Discovery",
+       "ti": "T1082",
+       "te": "System Information Discovery",
+       "ex": "Busca páginas internas de diagnóstico (Spring Actuator, Apache server-status, consolas de debug, Swagger). Revelan variables de entorno, rutas internas y a veces contraseñas, o permiten ejecutar código.",
+       "re": "Desactivar o proteger con autenticación los endpoints de diagnóstico en producción.",
+       "f": "Centinela",
+       "en": [
+        "url"
+       ],
+       "any": [
+        "/actuator",
+        "/server-status",
+        "/server-info",
+        "/debug/",
+        "/_profiler",
+        "/console",
+        "/jolokia",
+        "/telescope",
+        "/__debug__",
+        "/elmah.axd",
+        "/trace.axd",
+        "/metrics",
+        "/swagger",
+        "/api-docs",
+        "/graphql"
+       ]
+      },
+      {
+       "id": "wordpress",
+       "n": "Ataque a WordPress",
+       "c": "Acceso a credenciales",
+       "s": 2,
+       "ta": "Credential Access",
+       "ti": "T1110.001",
+       "te": "Brute Force: Password Guessing",
+       "ex": "Enumeración de usuarios y prueba de contraseñas contra WordPress (wp-login, xmlrpc), o búsqueda de plugins vulnerables. WordPress mueve el 40% de la web, así que es el objetivo número uno de los bots.",
+       "re": "Doble factor en WordPress, limitar intentos y desactivar xmlrpc.php si no se usa.",
+       "f": "Centinela",
+       "en": [
+        "url"
+       ],
+       "any": [
+        "/wp-login.php",
+        "/xmlrpc.php",
+        "/wp-admin",
+        "/wp-json/wp/v2/users",
+        "/?author=",
+        "/wp-content/plugins/",
+        "/wp-includes/",
+        "/wlwmanifest.xml"
+       ]
+      },
+      {
+       "id": "panel-admin",
+       "n": "Búsqueda de paneles de administración",
+       "c": "Reconocimiento",
+       "s": 2,
+       "ta": "Reconnaissance",
+       "ti": "T1595.003",
+       "te": "Active Scanning: Wordlist Scanning",
+       "ex": "Recorre rutas de paneles conocidos (phpMyAdmin, Tomcat, Jenkins, cPanel…) para encontrar dónde intentar contraseñas o explotar fallas. Es reconocimiento antes del ataque.",
+       "re": "No publicar paneles de administración; ponerlos detrás de VPN o Zero Trust (como nuestra consola).",
+       "f": "Centinela",
+       "en": [
+        "url"
+       ],
+       "any": [
+        "/phpmyadmin",
+        "/pma",
+        "/myadmin",
+        "/adminer",
+        "/manager/html",
+        "/admin",
+        "/administrator",
+        "/cpanel",
+        "/webmail",
+        "/solr/",
+        "/jenkins",
+        "/grafana",
+        "/kibana",
+        "/portainer",
+        "/zabbix",
+        "/nagios",
+        "/login.action",
+        "/user/login"
+       ]
+      },
+      {
+       "id": "fuerza-bruta",
+       "n": "Fuerza bruta de contraseñas",
+       "c": "Acceso a credenciales",
+       "s": 2,
+       "ta": "Credential Access",
+       "ti": "T1110.001",
+       "te": "Brute Force: Password Guessing",
+       "ex": "El atacante prueba combinaciones de usuario y contraseña (admin/admin, root/123456…) esperando que alguna funcione. Las contraseñas probadas quedan registradas: son las que los bots usan en todo internet.",
+       "re": "Contraseñas largas y únicas, doble factor y bloqueo tras varios intentos fallidos.",
+       "f": "Centinela",
+       "campo": "password"
+      },
+      {
+       "id": "login-exitoso-honeypot",
+       "n": "Acceso conseguido en el honeypot SSH/Telnet",
+       "c": "Acceso inicial",
+       "s": 4,
+       "ta": "Initial Access",
+       "ti": "T1078",
+       "te": "Valid Accounts",
+       "ex": "El atacante \"adivinó\" una contraseña y entró a la terminal falsa de Cowrie. Desde aquí todo lo que escriba queda grabado: así se ve qué hace un intruso real después de entrar.",
+       "re": "Ver la sesión completa en Kibana (comandos y archivos descargados).",
+       "f": "Centinela",
+       "en": [
+        "accion"
+       ],
+       "any": [
+        "cowrie.login.success"
+       ],
+       "hp": [
+        "cowrie"
+       ]
+      },
+      {
+       "id": "persistencia-ssh",
+       "n": "Persistencia con llave SSH o cron",
+       "c": "Persistencia",
+       "s": 4,
+       "ta": "Persistence",
+       "ti": "T1098.004",
+       "te": "Account Manipulation: SSH Authorized Keys",
+       "ex": "El intruso deja una forma de volver: agrega su llave SSH, crea una tarea programada o un usuario nuevo. Así conserva el acceso aunque se cambie la contraseña.",
+       "re": "Vigilar cambios en authorized_keys, cron y usuarios (en el server real lo hacen auditd y AIDE).",
+       "f": "Centinela",
+       "en": [
+        "cmd",
+        "cuerpo"
+       ],
+       "any": [
+        "authorized_keys",
+        "crontab",
+        "/etc/cron",
+        "/etc/rc.local",
+        "systemctl enable",
+        ".bashrc",
+        "useradd",
+        "passwd root",
+        "chpasswd"
+       ]
+      },
+      {
+       "id": "evasion",
+       "n": "Borrado de huellas y evasión",
+       "c": "Evasión de defensas",
+       "s": 3,
+       "ta": "Defense Evasion",
+       "ti": "T1070",
+       "te": "Indicator Removal",
+       "ex": "Intenta borrar el historial y los logs, matar otros procesos (incluidos malwares rivales) o apagar el firewall para que su actividad pase desapercibida.",
+       "re": "Enviar los logs fuera del equipo (como hacemos con Elasticsearch) para que no se puedan borrar.",
+       "f": "Centinela",
+       "en": [
+        "cmd",
+        "cuerpo"
+       ],
+       "any": [
+        "history -c",
+        "unset histfile",
+        "rm -rf /var/log",
+        "/dev/null 2>&1",
+        "pkill -9",
+        "kill -9",
+        "chattr",
+        "iptables -f",
+        "ufw disable",
+        "setenforce 0",
+        "rm -rf /tmp/*"
+       ]
+      },
+      {
+       "id": "reconocimiento-sistema",
+       "n": "Reconocimiento del sistema",
+       "c": "Reconocimiento",
+       "s": 1,
+       "ta": "Discovery",
+       "ti": "T1082",
+       "te": "System Information Discovery",
+       "ex": "Después de entrar, el bot pregunta qué máquina es: CPU, memoria, arquitectura y sistema. Con eso decide qué malware descargar (por ejemplo, la versión ARM o x86 de un minero).",
+       "re": "Sin acción; es el paso previo a la descarga de malware.",
+       "f": "Centinela",
+       "en": [
+        "cmd"
+       ],
+       "any": [
+        "uname",
+        "/proc/cpuinfo",
+        "nproc",
+        "free -m",
+        "lscpu",
+        "whoami",
+        "cat /etc/issue",
+        "ifconfig",
+        "getprop",
+        "ps aux",
+        "/proc/version",
+        "cat /etc/os-release"
+       ],
+       "hp": [
+        "cowrie",
+        "adbhoney"
+       ]
+      },
+      {
+       "id": "adb-android",
+       "n": "Ataque a Android Debug Bridge (ADB)",
+       "c": "Botnet",
+       "s": 3,
+       "ta": "Execution",
+       "ti": "T1059",
+       "te": "Command and Scripting Interpreter",
+       "ex": "Ataque a dispositivos Android (TV boxes, teléfonos) con el puerto de depuración ADB abierto. Instalan mineros o bots como \"ADB.Miner\" sin pedir contraseña.",
+       "re": "Nunca dejar el puerto 5555 (ADB) expuesto.",
+       "f": "Centinela",
+       "en": [
+        "cmd"
+       ],
+       "any": [
+        "pm install",
+        "am start",
+        "com.ufo.miner",
+        "trinity",
+        "/data/local/tmp",
+        "shell:",
+        "cnxn"
+       ],
+       "hp": [
+        "adbhoney"
+       ]
+      },
+      {
+       "id": "redis-abuso",
+       "n": "Abuso de Redis expuesto",
+       "c": "Explotación de servicio",
+       "s": 3,
+       "ta": "Execution",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Redis sin contraseña permite escribir archivos en el disco (CONFIG SET dir) o cargar módulos: los atacantes lo usan para meter llaves SSH, tareas cron o un minero.",
+       "re": "Redis siempre con contraseña y escuchando solo en la red interna.",
+       "f": "Centinela",
+       "en": [
+        "cmd"
+       ],
+       "any": [
+        "config set",
+        "slaveof",
+        "replicaof",
+        "module load",
+        "flushall",
+        "set backup",
+        "eval "
+       ],
+       "hp": [
+        "redishoneypot"
+       ]
+      },
+      {
+       "id": "smb-exploit",
+       "n": "Ataque a SMB (EternalBlue y similares)",
+       "c": "Explotación de servicio",
+       "s": 3,
+       "ta": "Lateral Movement",
+       "ti": "T1210",
+       "te": "Exploitation of Remote Services",
+       "ex": "Conexiones al servicio de archivos de Windows (SMB, puerto 445). Gusanos como WannaCry usan fallas como EternalBlue para propagarse solos entre equipos.",
+       "re": "No exponer SMB a internet y aplicar el parche MS17-010.",
+       "f": "Centinela",
+       "hp": [
+        "dionaea"
+       ],
+       "pt": [
+        445,
+        139
+       ]
+      },
+      {
+       "id": "ics-scada",
+       "n": "Sondeo de sistemas industriales (ICS/SCADA)",
+       "c": "Reconocimiento",
+       "s": 2,
+       "ta": "Reconnaissance",
+       "ti": "T1595.002",
+       "te": "Active Scanning: Vulnerability Scanning",
+       "ex": "Consultas a protocolos industriales (Modbus, S7, sensores de tanques de combustible). Las hacen buscadores como Shodan y también grupos interesados en infraestructura crítica.",
+       "re": "Nunca conectar equipos industriales directamente a internet.",
+       "f": "Centinela",
+       "hp": [
+        "conpot"
+       ]
+      },
+      {
+       "id": "smtp-relay",
+       "n": "Uso del servidor de correo para spam",
+       "c": "Abuso de servicio",
+       "s": 2,
+       "ta": "Resource Development",
+       "ti": "T1584.004",
+       "te": "Compromise Infrastructure: Server",
+       "ex": "Intento de usar el servidor de correo como \"relay abierto\" para enviar spam o phishing haciéndose pasar por nosotros.",
+       "re": "Exigir autenticación en SMTP y no aceptar correo para dominios ajenos.",
+       "f": "Centinela",
+       "hp": [
+        "mailoney"
+       ]
+      },
+      {
+       "id": "elastic-abuso",
+       "n": "Consulta a Elasticsearch expuesto",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Collection",
+       "ti": "T1213",
+       "te": "Data from Information Repositories",
+       "ex": "Buscan bases Elasticsearch abiertas para copiar o secuestrar los datos (borrarlos y pedir rescate). Miles de filtraciones de datos personales vinieron de esto.",
+       "re": "Elasticsearch siempre con contraseña y sin acceso desde internet.",
+       "f": "Centinela",
+       "en": [
+        "url",
+        "cmd"
+       ],
+       "any": [
+        "_search",
+        "_cat/indices",
+        "_nodes",
+        "_cluster",
+        "_all"
+       ],
+       "hp": [
+        "elasticpot"
+       ]
+      },
+      {
+       "id": "escaner-conocido",
+       "n": "Escáner automatizado identificado",
+       "c": "Reconocimiento",
+       "s": 1,
+       "ta": "Reconnaissance",
+       "ti": "T1595",
+       "te": "Active Scanning",
+       "ex": "La petición la hizo una herramienta automática (escáneres de seguridad, buscadores tipo Shodan/Censys o scripts de bots). No es necesariamente malicioso: mucho de internet se escanea a sí mismo todo el día.",
+       "re": "Sin acción; sirve para medir el \"ruido de fondo\" de internet.",
+       "f": "Centinela",
+       "en": [
+        "ua"
+       ],
+       "any": [
+        "zgrab",
+        "masscan",
+        "nmap",
+        "nuclei",
+        "sqlmap",
+        "nikto",
+        "dirbuster",
+        "gobuster",
+        "ffuf",
+        "wpscan",
+        "censys",
+        "shodan",
+        "expanse",
+        "internet-measurement",
+        "paloalto",
+        "binaryedge",
+        "leakix",
+        "netcraft",
+        "odin",
+        "fuzz faster",
+        "go-http-client",
+        "python-requests",
+        "curl/",
+        "wget/",
+        "l9explore",
+        "httpx"
+       ]
+      },
+      {
+       "id": "sondeo-generico",
+       "n": "Sondeo de rutas comunes",
+       "c": "Reconocimiento",
+       "s": 1,
+       "ta": "Reconnaissance",
+       "ti": "T1595.003",
+       "te": "Active Scanning: Wordlist Scanning",
+       "ex": "Pidió una página que no existe. Normalmente es un bot que recorre una lista de rutas típicas buscando algo vulnerable.",
+       "re": "Sin acción.",
+       "f": "Centinela",
+       "campo": "http_404",
+       "hp": [
+        "web"
+       ]
+      },
+      {
+       "id": "t-exposed-mysql-initial",
+       "n": "Trampa T-Pot: exposed-mysql-initial",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (exposed-mysql-initial). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Exposed mysql.initial trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/mysql.initial.sql"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET"
+      },
+      {
+       "id": "t-cve-2017-12637",
+       "n": "Explotación de CVE-2017-12637",
+       "c": "Explotación de vulnerabilidad",
+       "s": 3,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (CVE-2017-12637), con riesgo 7.5/10. Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Directory traversal vulnerability in scheduler/ui/js/ffffffffbca41eb4/UIUtilJavaScriptJS in SAP NetWeaver Application Server Java 7.5 allows remote attackers to read arbitrary files via a .. (dot dot) in the query string, as exploited in the wild in August 2017, aka SAP Security Note 2486657.",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/scheduler/ui/js/ffffffffbca41eb4/uiutiljavascriptjs*"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET",
+       "cve": "CVE-2017-12637",
+       "ref": "https://nvd.nist.gov/vuln/detail/CVE-2017-12637"
+      },
+      {
+       "id": "t-cve-2018-2791",
+       "n": "Explotación de CVE-2018-2791",
+       "c": "Explotación de vulnerabilidad",
+       "s": 3,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (CVE-2018-2791), con riesgo 8.2/10. Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Vulnerability in the Oracle WebCenter Sites component of Oracle Fusion Middleware",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/servlet/satellite"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET",
+       "cve": "CVE-2018-2791",
+       "ref": "https://nvd.nist.gov/vuln/detail/CVE-2018-2791"
+      },
+      {
+       "id": "t-cve-2019-19781",
+       "n": "Explotación de CVE-2019-19781",
+       "c": "Explotación de vulnerabilidad",
+       "s": 4,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (CVE-2019-19781), con riesgo 9.8/10. Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: An issue was discovered in Citrix Application Delivery Controller (ADC) and Gateway 10.5, 11.1, 12.0, 12.1, and 13.0. They allow Directory Traversal.",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/vpn/../vpns/cfg/smb.conf",
+        "/vpn/../vpns/portal/*.xml",
+        "/vpn/../vpns/portal/scripts/newbm.pl",
+        "/vpns/cfg/smb.conf",
+        "/vpns/portal/*.xml",
+        "/vpns/portal/scripts/newbm.pl"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "cve": "CVE-2019-19781",
+       "ref": "https://www.kb.cert.org/vuls/id/619785, https://isc.sans.edu/diary/25700, https://www.cisa.gov/news-events/cybersecurity-advisories/aa20-031a"
+      },
+      {
+       "id": "t-cve-2020-3452",
+       "n": "Explotación de CVE-2020-3452",
+       "c": "Explotación de vulnerabilidad",
+       "s": 3,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (CVE-2020-3452), con riesgo 7.5/10. Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: A vulnerability in the web services interface of Cisco Adaptive Security Appliance (ASA) Software and Cisco Firepower Threat Defense (FTD) Software could allow an unauthenticated, remote attacker to conduct directory traversal attacks and read sensitive files on a targeted system. The vulnerability is due to a lack of proper input validation of URLs in HTTP requests processed by an affected device",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/+cscot+/oem-customization",
+        "/+cscot+/translation-table"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET",
+       "cve": "CVE-2020-3452",
+       "ref": "https://nvd.nist.gov/vuln/detail/CVE-2020-3452"
+      },
+      {
+       "id": "t-cve-2021-21985",
+       "n": "Explotación de CVE-2021-21985",
+       "c": "Explotación de vulnerabilidad",
+       "s": 4,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (CVE-2021-21985), con riesgo 9.8/10. Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: vCenter-Virtual-SAN-Health-Check-plug-in",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/ui/h5-vsan/rest*"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "POST",
+       "cve": "CVE-2021-21985",
+       "ref": "https://nvd.nist.gov/vuln/detail/CVE-2021-21985"
+      },
+      {
+       "id": "t-cve-2024-38816",
+       "n": "Explotación de CVE-2024-38816",
+       "c": "Explotación de vulnerabilidad",
+       "s": 3,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (CVE-2024-38816), con riesgo 7.5/10. Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: CVE-2024-38816: Path traversal vulnerability in functional web frameworks.",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/static/link/*"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET",
+       "cve": "CVE-2024-38816",
+       "ref": "https://nvd.nist.gov/vuln/detail/CVE-2024-38816"
+      },
+      {
+       "id": "t-cve-2025-25257",
+       "n": "Explotación de CVE-2025-25257",
+       "c": "Explotación de vulnerabilidad",
+       "s": 4,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (CVE-2025-25257), con riesgo 9.8/10. Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Fortinet FortiWeb Fabric Connector before 7.0.4 and 7.2.2 is vulnerable to a pre-auth SQL injection (SQLi) in the /api/fabric/device/status endpoint, allowing unauthenticated remote code execution (RCE) via crafted Authorization headers. Exploitation can lead to arbitrary file write and code execution as root.",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/api/fabric/device/status",
+        "/cgi-bin/ml-draw.py"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET",
+       "cve": "CVE-2025-25257",
+       "ref": "https://pwner.gg/blog/2025-07-10-fortiweb-fabric-rce,https://labs.watchtowr.com/pre-auth-sql-injection-to-rce-fortinet-fortiweb-fabric-connector-cve-2025-25257/"
+      },
+      {
+       "id": "t-cve-2025-49706",
+       "n": "Explotación de CVE-2025-49706",
+       "c": "Explotación de vulnerabilidad",
+       "s": 3,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (CVE-2025-49706), con riesgo 8.2/10. Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Microsoft SharePoint is vulnerable to a spoofing vulnerability (CVE-2025-49706) that allows attackers to craft malicious URLs and spoof headers (e.g., X-UserToken, X-Ms-Client-Request-Id) to bypass authentication, impersonate users, and potentially upload web shells. The flaw is actively exploited in the wild and can be chained for RCE.",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "*_layouts/15/signout.aspx",
+        "*_layouts/15/upload.aspx",
+        "*_layouts/15/userprofileservice.asmx"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "cve": "CVE-2025-49706",
+       "ref": "https://github.com/AdityaBhatt3010/CVE-2025-49706-SharePoint-Spoofing-Vulnerability-Under-Active-Exploitation,https://msrc.microsoft.com/update-guide/vulnerability/CVE-2025-49706,https://nvd.nist.gov/vuln/detail/CVE-2025-49706,https://thehackernews.com/2025/07/critical-microsoft-sharepoint-flaw.html"
+      },
+      {
+       "id": "t-cve-2026-10520",
+       "n": "Explotación de CVE-2026-10520",
+       "c": "Explotación de vulnerabilidad",
+       "s": 4,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (CVE-2026-10520), con riesgo 10.0/10. Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Ivanti Sentry before R10.5.2, R10.6.2, and R10.7.1 is affected by a pre-authenticated OS command injection vulnerability in the MICS configuration API. Public analysis describes unauthenticated POST requests to /mics/api/v2/sentry/mics-config/handleMessage where the message parameter is parsed as an internal execute command and can reach commandexec/reqandres handling. This trap detects that high-",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/mics/api/v2/sentry/mics-config/handlemessage*"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "cve": "CVE-2026-10520",
+       "ref": "https://hub.ivanti.com/s/article/Security-Advisory-Ivanti-Sentry-CVE-2026-10520-CVE-2026-10523?language=en_US,https://nvd.nist.gov/vuln/detail/CVE-2026-10520,https://www.rapid7.com/blog/post/etr-cve-2026-10520-cve-2026-10523-multiple-critical-vulnerabilities-affecting-ivanti-sentry/,https://labs.watchtowr.com/more-evidence-that-words-dont-mean-what-we-thought-they-meant-ivanti-sentry-pre-auth-os-command-injection-cve-2026-10520/,https://cyberpress.org/ivanti-command-injection-flaw/"
+      },
+      {
+       "id": "t-cve-2026-41940",
+       "n": "Explotación de CVE-2026-41940",
+       "c": "Explotación de vulnerabilidad",
+       "s": 4,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (CVE-2026-41940), con riesgo 9.8/10. Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: cPanel & WHM after v11.40 is affected by an authentication bypass in session handling. cPanel describes a missing sanitisation step in the Basic authentication session-write path; public reporting describes exploitation using a Basic Authorization header and a manipulated whostmgrsession cookie. This trap uses h0neytr4p's Authorization-Basic-Decoded virtual header to detect known session-poisoning",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "*/cpsess*/json-api/passwd",
+        "*/login/"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "cve": "CVE-2026-41940",
+       "ref": "https://www.cpanel.net/blog/security/security-update-cve-2026-41940/,https://www.cve.org/CVERecord?id=CVE-2026-41940,https://www.rapid7.com/db/modules/exploit/multi/http/cpanel_whm_auth_bypass_rce/"
+      },
+      {
+       "id": "t-cve-2026-42945",
+       "n": "Explotación de CVE-2026-42945",
+       "c": "Explotación de vulnerabilidad",
+       "s": 4,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (CVE-2026-42945), con riesgo 9.2/10. Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: NGINX Rift is a heap buffer overflow in ngx_http_rewrite_module. It is reachable on affected NGINX Open Source and NGINX Plus versions when rewrite rules use unnamed PCRE captures such as $1 or $2 together with a replacement string containing a question mark, followed by rewrite, if, or set. The trap catches public PoC-style probes and generic long plus-sign URI payloads commonly used to trigger t",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "*++++++++++++++++*",
+        "*/api/*++++++++++++++++*",
+        "*/spray"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "cve": "CVE-2026-42945",
+       "ref": "https://nginx.org/en/security_advisories.html,https://www.cve.org/CVERecord?id=CVE-2026-42945,https://depthfirst.com/research/nginx-rift-achieving-nginx-rce-via-an-18-year-old-vulnerability,https://github.com/depthfirstdisclosures/nginx-rift"
+      },
+      {
+       "id": "t-cve-2026-49448",
+       "n": "Explotación de CVE-2026-49448",
+       "c": "Explotación de vulnerabilidad",
+       "s": 4,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (CVE-2026-49448), con riesgo 9.8/10. Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: authentik before 2025.12.6, 2026.2.4, and 2026.5.1 can bypass a Source stage when the current flow receives an empty POST. The official advisory's proof path uses the flow executor endpoint after an identification step. This trap detects empty POSTs to the API flow executor and common browser flow executor paths, plus the preceding username-only identification request.",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "*/api/v3/flows/executor/*/",
+        "*/flows/executor/*/"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "POST",
+       "cve": "CVE-2026-49448",
+       "ref": "https://github.com/goauthentik/authentik/security/advisories/GHSA-xp7f-xjjx-gwm8,https://docs.goauthentik.io/docs/developer-docs/api/reference/flows-executor-get,https://www.cve.org/CVERecord?id=CVE-2026-49448"
+      },
+      {
+       "id": "t-cve-2026-8206",
+       "n": "Explotación de CVE-2026-8206",
+       "c": "Explotación de vulnerabilidad",
+       "s": 4,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (CVE-2026-8206), con riesgo 9.8/10. Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Kirki - Freeform Page Builder, Website Builder & Customizer for WordPress 6.0.0 through 6.0.6 is affected by an unauthenticated privilege-escalation flaw in its forgot-password flow. Public reports describe attackers POSTing a target username and attacker-controlled email address to the KirkiComponentLibrary forgot-password REST endpoint. This trap detects those REST requests for both form and JSO",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "*/wp-json/kirkicomponentlibrary/v1/kirki-forgot-password"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "POST",
+       "cve": "CVE-2026-8206",
+       "ref": "https://patchstack.com/database/wordpress/plugin/kirki/vulnerability/wordpress-kirki-plugin-6-0-0-6-0-6-unauthenticated-privilege-escalation-via-handle-forgot-password-vulnerability,https://www.wordfence.com/threat-intel/vulnerabilities/wordpress-plugins/kirki,https://www.cve.org/CVERecord?id=CVE-2026-8206"
+      },
+      {
+       "id": "t-apache-config",
+       "n": "Trampa T-Pot: apache-config",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (apache-config). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Apache Config file disclosure trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/apache.conf"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET"
+      },
+      {
+       "id": "t-nginx-config-exposed",
+       "n": "Trampa T-Pot: nginx_config_exposed",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (nginx_config_exposed). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Exposed nginx.conf trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/nginx.conf"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET"
+      },
+      {
+       "id": "t-exposed-web-config",
+       "n": "Trampa T-Pot: exposed-web-config",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (exposed-web-config). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Web Config file exposed trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/web.config"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET"
+      },
+      {
+       "id": "t-dvwa-default-login",
+       "n": "Trampa T-Pot: dvwa-default-login",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (dvwa-default-login). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: DVWA Default Login trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/login.php"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "POST"
+      },
+      {
+       "id": "t-env-config-file",
+       "n": "Trampa T-Pot: env_config_file",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (env_config_file). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: .env config file exposed trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/.env*"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET"
+      },
+      {
+       "id": "t-git-config",
+       "n": "Trampa T-Pot: git_config",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (git_config). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Git config exposed trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "*/.git*"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET"
+      },
+      {
+       "id": "t-jenkins-home",
+       "n": "Trampa T-Pot: jenkins_home",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (jenkins_home). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: ",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/jenkins"
+       ],
+       "f": "T-Pot h0neytr4p"
+      },
+      {
+       "id": "t-nagois-default-creds",
+       "n": "Trampa T-Pot: nagois-default-creds",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (nagois-default-creds). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Nagois Admin console default credentials trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/nagios/side.php",
+        "/nagios/side.php*"
+       ],
+       "f": "T-Pot h0neytr4p"
+      },
+      {
+       "id": "t-ofbiz-default-credentials",
+       "n": "Trampa T-Pot: ofbiz-default-credentials",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (ofbiz-default-credentials). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Apache OfBiz Default Credentials trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/control/login"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "POST"
+      },
+      {
+       "id": "t-rabbitmq-default-admin",
+       "n": "Trampa T-Pot: rabbitmq-default-admin",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (rabbitmq-default-admin). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: RabbitMQ Default Credentials trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/api/whoami"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET"
+      },
+      {
+       "id": "t-rockmongo-default-creds",
+       "n": "Trampa T-Pot: rockmongo-default-creds",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (rockmongo-default-creds). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: ",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/index.php"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "POST"
+      },
+      {
+       "id": "t-wordpress-user-enum",
+       "n": "Trampa T-Pot: wordpress_user_enum",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (wordpress_user_enum). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: wordpress user enumeration trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/wp-json/wp/v2/users/"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET"
+      },
+      {
+       "id": "t-zabbix-default-credentials",
+       "n": "Trampa T-Pot: zabbix-default-credentials",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (zabbix-default-credentials). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Zabbix Default Credentials trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/index.php"
+       ],
+       "f": "T-Pot h0neytr4p"
+      },
+      {
+       "id": "t-ibm-infoprint-lfi",
+       "n": "Trampa T-Pot: ibm-infoprint-lfi",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (ibm-infoprint-lfi). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: IBM InfoPrint 4247-Z03 Impact Matrix Printer - Directory Traversal trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/*/etc/passwd"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET"
+      },
+      {
+       "id": "t-jira-unauthenticated-adminprojects",
+       "n": "Trampa T-Pot: jira-unauthenticated-adminprojects",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (jira-unauthenticated-adminprojects). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Jira Unauthenticated Admin Projects trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/rest/api/2/dashboard",
+        "/rest/menu/latest/admin"
+       ],
+       "f": "T-Pot h0neytr4p"
+      },
+      {
+       "id": "t-jira-unauthenticated-projectcategories",
+       "n": "Trampa T-Pot: jira-unauthenticated-projectcategories",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (jira-unauthenticated-projectcategories). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Jira Unauthenticated Project Categories trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/rest/api/2/projectcategory"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET"
+      },
+      {
+       "id": "t-jira-unauthenticated-resolutions",
+       "n": "Trampa T-Pot: jira-unauthenticated-resolutions",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (jira-unauthenticated-resolutions). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Jira Unauthenticated Resolutions trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/rest/api/2/resolution"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET"
+      },
+      {
+       "id": "t-jira-unauthenticated-user-picker",
+       "n": "Trampa T-Pot: jira-unauthenticated-user-picker",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (jira-unauthenticated-user-picker). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Jira Unauthenticated User Picker trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/secure/popups/userpickerbrowser.jspa"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET"
+      },
+      {
+       "id": "t-springboot-h2-db-rce",
+       "n": "Trampa T-Pot: springboot-h2-db-rce",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (springboot-h2-db-rce). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: Spring Boot H2 Database RCE trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/actuator/env"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "POST"
+      },
+      {
+       "id": "t-thinkphp-2-rce",
+       "n": "Trampa T-Pot: thinkphp-2-rce",
+       "c": "Exposición de secretos",
+       "s": 2,
+       "ta": "Initial Access",
+       "ti": "T1190",
+       "te": "Exploit Public-Facing Application",
+       "ex": "Intento de explotar una vulnerabilidad publicada (thinkphp-2-rce). Detectado con el catálogo de trampas de T-Pot (h0neytr4p). Descripción original: ThinkPHP 2 / 3 's' Parameter RCE trap",
+       "re": "Revisar las referencias del CVE y confirmar que ningún sistema real use esa versión.",
+       "hp": [
+        "web"
+       ],
+       "glob": [
+        "/index.php"
+       ],
+       "f": "T-Pot h0neytr4p",
+       "me": "GET"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "remove": {
+    "field": [
+     "hp_ts"
+    ],
+    "ignore_missing": true
+   }
+  },
+  {
+   "set": {
+    "field": "event.category",
+    "value": [
+     "intrusion_detection"
+    ]
+   }
+  },
+  {
+   "set": {
+    "field": "event.kind",
+    "value": "event"
+   }
+  },
+  {
+   "geoip": {
+    "field": "source.ip",
+    "target_field": "source.geo",
+    "database_file": "GeoLite2-City.mmdb",
+    "ignore_missing": true,
+    "ignore_failure": true,
+    "properties": [
+     "continent_name",
+     "country_name",
+     "country_iso_code",
+     "region_name",
+     "city_name",
+     "location"
+    ]
+   }
+  },
+  {
+   "geoip": {
+    "field": "source.ip",
+    "target_field": "source.as",
+    "database_file": "GeoLite2-ASN.mmdb",
+    "ignore_missing": true,
+    "ignore_failure": true,
+    "properties": [
+     "asn",
+     "organization_name"
+    ]
+   }
+  },
+  {
+   "rename": {
+    "field": "source.as.asn",
+    "target_field": "source.as.number",
+    "ignore_missing": true,
+    "ignore_failure": true
+   }
+  },
+  {
+   "rename": {
+    "field": "source.as.organization_name",
+    "target_field": "source.as.organization.name",
+    "ignore_missing": true,
+    "ignore_failure": true
+   }
+  },
+  {
+   "set": {
+    "field": "source.geo.country_name",
+    "value": "Red interna (prueba)",
+    "if": "ctx.source?.ip != null && (ctx.source.ip.startsWith('10.') || ctx.source.ip.startsWith('192.168.') || ctx.source.ip.startsWith('127.'))"
+   }
+  },
+  {
+   "community_id": {
+    "ignore_failure": true,
+    "ignore_missing": true
+   }
+  }
+ ],
+ "on_failure": [
+  {
+   "set": {
+    "field": "error.message",
+    "value": "{{{ _ingest.on_failure_message }}}"
+   }
+  }
+ ]
+}

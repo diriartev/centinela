@@ -1,0 +1,150 @@
+# {{ ansible_managed }}
+# SIEM de Centinela. Nada se publica: Kibana sale por cloudflared (insights.)
+name: siem
+x-seguridad: &seguridad
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  logging:
+    driver: local
+    options: { max-size: "20m", max-file: "3" }
+
+services:
+  es01:
+    <<: *seguridad
+    image: docker.elastic.co/elasticsearch/elasticsearch:{{ elastic_version }}
+    container_name: es01
+    restart: unless-stopped
+    environment:
+      - node.name=es01
+      - cluster.name=centinela
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - ES_JAVA_OPTS=-Xms{{ es_heap }} -Xmx{{ es_heap }}
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - xpack.license.self_generated.type=basic
+      - xpack.ml.enabled=false
+      - ingest.geoip.downloader.enabled=false
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=true
+      - xpack.security.http.ssl.key=certs/es01.key
+      - xpack.security.http.ssl.certificate=certs/es01.crt
+      - xpack.security.http.ssl.certificate_authorities=certs/ca.crt
+      - xpack.security.transport.ssl.enabled=true
+      - xpack.security.transport.ssl.key=certs/es01.key
+      - xpack.security.transport.ssl.certificate=certs/es01.crt
+      - xpack.security.transport.ssl.certificate_authorities=certs/ca.crt
+      - xpack.security.transport.ssl.verification_mode=certificate
+      - xpack.security.audit.enabled=true
+      - path.repo=/usr/share/elasticsearch/snapshots
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    volumes:
+      - ./certs/ca.crt:/usr/share/elasticsearch/config/certs/ca.crt:ro
+      - ./certs/es01.crt:/usr/share/elasticsearch/config/certs/es01.crt:ro
+      - ./certs/es01.key:/usr/share/elasticsearch/config/certs/es01.key:ro
+      - ./geoip:/usr/share/elasticsearch/config/ingest-geoip:ro
+      - esdata:/usr/share/elasticsearch/data
+      - ./snapshots:/usr/share/elasticsearch/snapshots
+    networks:
+      data: { ipv4_address: {{ ip_es }} }
+    mem_limit: {{ es_mem_limit }}
+    cpus: 6
+    pids_limit: 4096
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' --cacert config/certs/ca.crt https://localhost:9200 | grep -q 401"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+
+  kibana:
+    <<: *seguridad
+    image: docker.elastic.co/kibana/kibana:{{ elastic_version }}
+    container_name: kibana
+    restart: unless-stopped
+    depends_on:
+      es01: { condition: service_healthy }
+    environment:
+      - SERVER_NAME=insights
+      - SERVER_HOST={{ ip_kibana_admin }}
+      - SERVER_PUBLICBASEURL=https://insights.{{ cf_dominio }}
+      - ELASTICSEARCH_HOSTS=https://{{ ip_es }}:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
+      - ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=config/certs/ca.crt
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${KIBANA_ENC_KEY}
+      - XPACK_SECURITY_ENCRYPTIONKEY=${KIBANA_SEC_KEY}
+      - XPACK_REPORTING_ENCRYPTIONKEY=${KIBANA_REP_KEY}
+      - KIBANA_VISOR_PASSWORD=${KIBANA_VISOR_PASSWORD}
+      - XPACK_SECURITY_SECURECOOKIES=true
+      - XPACK_SECURITY_SAMESITECOOKIES=Lax
+      - TELEMETRY_OPTIN=false
+      - TELEMETRY_ENABLED=false
+      - NEWSFEED_ENABLED=false
+      - XPACK_FLEET_AGENTS_ENABLED=false
+      - SERVER_SECURITYRESPONSEHEADERS_STRICTTRANSPORTSECURITY=max-age=31536000
+      - SERVER_SECURITYRESPONSEHEADERS_DISABLEEMBEDDING=true
+      - NODE_OPTIONS=--max-old-space-size=1200
+      - SERVER_SSL_ENABLED=true
+      - SERVER_SSL_CERTIFICATE=config/certs/kibana.crt
+      - SERVER_SSL_KEY=config/certs/kibana.key
+      - SERVER_SSL_SUPPORTEDPROTOCOLS=["TLSv1.2","TLSv1.3"]
+    volumes:
+      - ./kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+      - ./certs/ca.crt:/usr/share/kibana/config/certs/ca.crt:ro
+      - ./certs/kibana.crt:/usr/share/kibana/config/certs/kibana.crt:ro
+      - ./certs/kibana.key:/usr/share/kibana/config/certs/kibana.key:ro
+      - kibanadata:/usr/share/kibana/data
+    networks:
+      data: { ipv4_address: {{ ip_kibana_data }} }
+      admin: { ipv4_address: {{ ip_kibana_admin }} }
+    mem_limit: 1800m
+    cpus: 2
+    read_only: true
+    tmpfs: [/tmp]
+    pids_limit: 1024
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk -o /dev/null -w '%{http_code}' https://{{ ip_kibana_admin }}:5601/api/status | grep -qE '200|401'"]
+      interval: 20s
+      timeout: 10s
+      retries: 40
+
+  filebeat:
+    <<: *seguridad
+    image: docker.elastic.co/beats/filebeat:{{ elastic_version }}
+    container_name: filebeat
+    restart: unless-stopped
+    user: root
+    cap_add: [DAC_READ_SEARCH]       # leer logs de los honeypots (solo lectura)
+    depends_on:
+      es01: { condition: service_healthy }
+    command: ["filebeat", "-e", "--strict.perms=false", "-c", "/usr/share/filebeat/filebeat.yml"]
+    environment:
+      - INGEST_PASSWORD=${INGEST_PASSWORD}
+    read_only: true
+    tmpfs: [/tmp]
+    volumes:
+      - ./config/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - ./certs/ca.crt:/usr/share/filebeat/certs/ca.crt:ro
+      - /opt/stacks/honeypots/data:/hp:ro
+      - /opt/stacks/decoy/log:/decoy:ro
+      - fbdata:/usr/share/filebeat/data
+    networks:
+      data: { ipv4_address: {{ ip_filebeat }} }
+    mem_limit: 400m
+    cpus: 1
+    healthcheck:
+      test: ["CMD", "filebeat", "test", "config", "--strict.perms=false", "-c", "/usr/share/filebeat/filebeat.yml"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    pids_limit: 256
+
+volumes:
+  esdata:
+  kibanadata:
+  fbdata:
+
+networks:
+  data:  { external: true, name: {{ red_data.nombre }} }
+  admin: { external: true, name: {{ red_admin.nombre }} }

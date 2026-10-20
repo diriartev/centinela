@@ -1,0 +1,133 @@
+# {{ ansible_managed }}
+# Honeypots de Centinela. Red "honey": interna, sin salida a internet, sin
+# comunicación entre contenedores (icc=false). No se publica NINGÚN puerto en la IP
+# del server: cuando exista el VPS señuelo, el tráfico llegará por WireGuard.
+name: honeypots
+x-hp: &hp
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  # Las imágenes de T-Pot marcan sus binarios con cap_net_bind_service: si esa
+  # capacidad no está en el conjunto límite, el kernel no deja ejecutarlos.
+  cap_add: [NET_BIND_SERVICE]
+  security_opt: ["no-new-privileges:true"]
+  sysctls:
+    net.ipv4.ip_unprivileged_port_start: "0"   # escuchar en 22, 25, 445… sin capacidades
+  cpus: 0.5
+  pids_limit: 256
+  logging:
+    driver: local
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  cowrie:
+    <<: *hp
+    # Salud sin conectarse (una conexión quedaría registrada como ataque): ¿el puerto 22 escucha?
+    healthcheck:
+      test: ["CMD-SHELL", "grep -qiE ':0016 [0-9A-F:]+ 0A' /proc/net/tcp /proc/net/tcp6"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    image: dtagdevsec/cowrie:24.04.1
+    container_name: hp-cowrie
+    tmpfs: ["/tmp/cowrie:uid=2000,gid=2000", "/tmp/cowrie/data:uid=2000,gid=2000"]
+    volumes:
+      - ./data/cowrie/downloads:/home/cowrie/cowrie/dl
+      - ./data/cowrie/keys:/home/cowrie/cowrie/etc
+      - ./data/cowrie/log:/home/cowrie/cowrie/log
+      - ./data/cowrie/log/tty:/home/cowrie/cowrie/log/tty
+    mem_limit: 384m
+    networks: { honey: { ipv4_address: {{ honeypots_ips.cowrie }} } }
+
+  dionaea:
+    <<: *hp
+    image: dtagdevsec/dionaea:24.04.1
+    container_name: hp-dionaea
+    cap_add: [NET_BIND_SERVICE, SETUID, SETGID, CHOWN, DAC_OVERRIDE, FOWNER]   # arranca como root y baja a "dionaea"
+    volumes:
+      - ./data/dionaea/roots/ftp:/opt/dionaea/var/dionaea/roots/ftp
+      - ./data/dionaea/roots/tftp:/opt/dionaea/var/dionaea/roots/tftp
+      - ./data/dionaea/roots/www:/opt/dionaea/var/dionaea/roots/www
+      - ./data/dionaea/roots/upnp:/opt/dionaea/var/dionaea/roots/upnp
+      - ./data/dionaea:/opt/dionaea/var/dionaea
+      - ./data/dionaea/binaries:/opt/dionaea/var/dionaea/binaries
+      - ./data/dionaea/log:/opt/dionaea/var/log
+      - ./data/dionaea/rtp:/opt/dionaea/var/dionaea/rtp
+    mem_limit: 512m
+    networks: { honey: { ipv4_address: {{ honeypots_ips.dionaea }} } }
+
+  conpot:
+    <<: *hp
+    image: dtagdevsec/conpot:24.04.1
+    container_name: hp-conpot
+    environment:
+      - CONPOT_CONFIG=/etc/conpot/conpot.cfg
+      - CONPOT_JSON_LOG=/var/log/conpot/conpot_guardian_ast.json
+      - CONPOT_LOG=/var/log/conpot/conpot_guardian_ast.log
+      - CONPOT_TEMPLATE=guardian_ast
+      - CONPOT_TMP=/tmp/conpot
+    tmpfs: ["/tmp/conpot:uid=2000,gid=2000"]
+    volumes: ["./data/conpot/log:/var/log/conpot"]
+    mem_limit: 256m
+    networks: { honey: { ipv4_address: {{ honeypots_ips.conpot }} } }
+
+  elasticpot:
+    <<: *hp
+    # Salud sin conectarse (una conexión quedaría registrada como ataque): ¿el puerto 9200 escucha?
+    healthcheck:
+      test: ["CMD-SHELL", "grep -qiE ':23F0 [0-9A-F:]+ 0A' /proc/net/tcp /proc/net/tcp6"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    image: dtagdevsec/elasticpot:24.04.1
+    container_name: hp-elasticpot
+    volumes: ["./data/elasticpot/log:/opt/elasticpot/log"]
+    mem_limit: 192m
+    networks: { honey: { ipv4_address: {{ honeypots_ips.elasticpot }} } }
+
+  redishoneypot:
+    <<: *hp
+    # Salud sin conectarse (una conexión quedaría registrada como ataque): ¿el puerto 6379 escucha?
+    healthcheck:
+      test: ["CMD-SHELL", "grep -qiE ':18EB [0-9A-F:]+ 0A' /proc/net/tcp /proc/net/tcp6"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    image: dtagdevsec/redishoneypot:24.04.1
+    container_name: hp-redis
+    volumes: ["./data/redishoneypot/log:/var/log/redishoneypot"]
+    mem_limit: 128m
+    networks: { honey: { ipv4_address: {{ honeypots_ips.redishoneypot }} } }
+
+  mailoney:
+    <<: *hp
+    # Salud sin conectarse (una conexión quedaría registrada como ataque): ¿el puerto 25 escucha?
+    healthcheck:
+      test: ["CMD-SHELL", "grep -qiE ':0019 [0-9A-F:]+ 0A' /proc/net/tcp /proc/net/tcp6"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    image: dtagdevsec/mailoney:24.04.1
+    container_name: hp-mailoney
+    volumes: ["./data/mailoney/log:/opt/mailoney/logs"]
+    mem_limit: 192m
+    networks: { honey: { ipv4_address: {{ honeypots_ips.mailoney }} } }
+
+  adbhoney:
+    <<: *hp
+    # Salud sin conectarse (una conexión quedaría registrada como ataque): ¿el puerto 5555 escucha?
+    healthcheck:
+      test: ["CMD-SHELL", "grep -qiE ':15B3 [0-9A-F:]+ 0A' /proc/net/tcp /proc/net/tcp6"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    image: dtagdevsec/adbhoney:24.04.1
+    container_name: hp-adbhoney
+    volumes:
+      - ./data/adbhoney/log:/opt/adbhoney/log
+      - ./data/adbhoney/downloads:/opt/adbhoney/dl
+    mem_limit: 192m
+    networks: { honey: { ipv4_address: {{ honeypots_ips.adbhoney }} } }
+
+networks:
+  honey: { external: true, name: {{ red_honey.nombre }} }

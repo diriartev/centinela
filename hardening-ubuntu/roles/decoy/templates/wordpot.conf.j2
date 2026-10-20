@@ -1,0 +1,16 @@
+# Wordpot (sensor del blog de {{ decoy_marca }}). Imita un WordPress con plugins vulnerables.
+HOST        = '0.0.0.0'
+PORT        = '80'
+THEME       = 'twentyeleven'
+SERVER      = 'Apache/2.4.41 (Ubuntu)'
+
+BLOGTITLE   = '{{ decoy_marca }} Engineering'
+BLOGSUBTITLE   = 'Notas del equipo de infraestructura'
+VERSION     = '5.8.1'
+AUTHORS     = ['admin', 'editor', 'devops']
+
+HPFEEDS_ENABLED = False
+HPFEEDS_HOST = '127.0.0.1'
+HPFEEDS_PORT = 10000
+HPFEEDS_IDENT = 'wordpot'
+HPFEEDS_SECRET = 'wordpot-pass'

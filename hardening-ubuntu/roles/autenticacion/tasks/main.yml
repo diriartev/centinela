@@ -1,0 +1,239 @@
+---
+# ── Calidad de contraseñas ─────────────────────────────────────────
+- name: Auth | Política pwquality
+  ansible.builtin.lineinfile:
+    path: /etc/security/pwquality.conf
+    regexp: '^#?\s*{{ item.k }}\s*='
+    line: "{{ item.k }} = {{ item.v }}"
+  loop:
+    - { k: minlen,    v: 14 }
+    - { k: minclass,  v: 4 }
+    - { k: maxrepeat, v: 3 }
+    - { k: dictcheck, v: 1 }
+    - { k: usercheck, v: 1 }
+    - { k: enforcing, v: 1 }
+  loop_control:
+    label: "{{ item.k }}"
+
+- name: Auth | pwquality también para root
+  ansible.builtin.lineinfile:
+    path: /etc/security/pwquality.conf
+    regexp: '^#?\s*enforce_for_root'
+    line: enforce_for_root
+
+# ── Bloqueo por intentos fallidos + historial ──────────────────────
+# En Ubuntu el stack PAM se arma con pam-auth-update a partir de perfiles
+# en /usr/share/pam-configs (así lo recomienda el CIS de Ubuntu 22.04):
+# nunca se editan a mano los common-* (un error ahí rompe sudo).
+- name: Auth | Configurar faillock
+  ansible.builtin.lineinfile:
+    path: /etc/security/faillock.conf
+    regexp: '^#?\s*{{ item.k }}\s*='
+    line: "{{ item.k }} = {{ item.v }}"
+  loop:
+    - { k: deny,          v: 5 }
+    - { k: fail_interval, v: 900 }
+    - { k: unlock_time,   v: 900 }
+  loop_control:
+    label: "{{ item.k }}"
+
+- name: Auth | Perfiles PAM (faillock, aviso de fallos, historial)
+  ansible.builtin.copy:
+    dest: "/usr/share/pam-configs/{{ item.nombre }}"
+    content: "{{ item.contenido }}"
+    mode: "0644"
+  loop:
+    - nombre: faillock
+      contenido: |
+        Name: Enable pam_faillock to deny access
+        Default: yes
+        Priority: 0
+        Auth-Type: Primary
+        Auth:
+        	[default=die] pam_faillock.so authfail
+    - nombre: faillock_notify
+      contenido: |
+        Name: Notify of failed login attempts and reset count upon success
+        Default: yes
+        Priority: 1024
+        Auth-Type: Primary
+        Auth:
+        	requisite pam_faillock.so preauth
+        Account-Type: Primary
+        Account:
+        	required pam_faillock.so
+    - nombre: pwhistory
+      contenido: |
+        Name: pwhistory password history checking
+        Default: yes
+        Priority: 1000
+        Password-Type: Primary
+        Password:
+        	requisite pam_pwhistory.so remember=5 enforce_for_root try_first_pass use_authtok
+  loop_control:
+    label: "{{ item.nombre }}"
+  register: perfiles_pam
+
+- name: Auth | Activar los perfiles en el stack PAM
+  ansible.builtin.command: pam-auth-update --enable faillock faillock_notify pwhistory
+  when: perfiles_pam.changed  # noqa: no-handler
+  changed_when: true
+
+# Comprobación inmediata: una invocación NUEVA de sudo debe seguir funcionando
+- name: Auth | Verificar que sudo sigue funcionando tras tocar PAM
+  ansible.builtin.command: id -u
+  register: sudo_ok
+  changed_when: false
+  failed_when: sudo_ok.stdout != "0"
+
+# ── login.defs ─────────────────────────────────────────────────────
+- name: Auth | Políticas en login.defs
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: '^\s*#?\s*{{ item.k }}\s'
+    line: "{{ item.k }}\t{{ item.v }}"
+  loop:
+    - { k: PASS_MAX_DAYS,          v: 365 }   # cuentas con llave: caducidad larga
+    - { k: PASS_MIN_DAYS,          v: 1 }
+    - { k: PASS_WARN_AGE,          v: 14 }
+    - { k: UMASK,                  v: "027" }
+    - { k: ENCRYPT_METHOD,         v: YESCRYPT }
+    - { k: YESCRYPT_COST_FACTOR,   v: 7 }
+    - { k: SHA_CRYPT_MIN_ROUNDS,   v: 10000 }
+    - { k: SHA_CRYPT_MAX_ROUNDS,   v: 100000 }
+  loop_control:
+    label: "{{ item.k }}"
+
+- name: Auth | umask 027 y TMOUT de 15 min en las shells
+  ansible.builtin.copy:
+    dest: /etc/profile.d/99-hardening.sh
+    content: |
+      # Gestionado por Ansible
+      umask 027
+      if [ -z "$TMOUT" ]; then
+          TMOUT=900
+          readonly TMOUT
+          export TMOUT
+      fi
+    mode: "0644"
+
+# ── Banners ────────────────────────────────────────────────────────
+- name: Auth | Banners legales
+  ansible.builtin.template:
+    src: banner.j2
+    dest: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [/etc/issue, /etc/issue.net]
+
+# El MOTD dinámico de Ubuntu filtra versión, kernel y noticias: se apaga
+- name: Auth | Desactivar scripts del MOTD dinámico
+  ansible.builtin.file:
+    path: /etc/update-motd.d
+    mode: "0700"
+    recurse: false
+
+- name: Auth | Quitar ejecución a los scripts del MOTD
+  ansible.builtin.shell: find /etc/update-motd.d -type f -perm /111 -exec chmod a-x {} + -print
+  register: motd
+  changed_when: motd.stdout | length > 0
+
+- name: Auth | MOTD estático
+  ansible.builtin.template:
+    src: banner.j2
+    dest: /etc/motd
+    mode: "0644"
+
+# ── cron / at: solo root ───────────────────────────────────────────
+- name: Auth | Solo root usa cron y at
+  ansible.builtin.copy:
+    dest: "{{ item }}"
+    content: "root\n"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: [/etc/cron.allow, /etc/at.allow]
+
+- name: Auth | Quitar listas deny
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: [/etc/cron.deny, /etc/at.deny]
+
+- name: Auth | Permisos de directorios de cron
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop: [/etc/cron.d, /etc/cron.hourly, /etc/cron.daily, /etc/cron.weekly, /etc/cron.monthly]
+
+# ── Archivos sensibles ─────────────────────────────────────────────
+- name: Auth | Revisar archivos sensibles
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+  loop: "{{ archivos_sensibles }}"
+  register: sensibles_stat
+  vars:
+    archivos_sensibles:
+      - { path: /etc/shadow,          mode: "0640", group: shadow }
+      - { path: /etc/gshadow,         mode: "0640", group: shadow }
+      - { path: /etc/shadow-,         mode: "0640", group: shadow }
+      - { path: /etc/gshadow-,        mode: "0640", group: shadow }
+      - { path: /etc/passwd,          mode: "0644", group: root }
+      - { path: /etc/group,           mode: "0644", group: root }
+      - { path: /root/.ssh,           mode: "0700", group: root }
+      - { path: /etc/crontab,         mode: "0600", group: root }
+      - { path: /etc/ssh/sshd_config, mode: "0600", group: root }
+      - { path: /boot/grub/grub.cfg,  mode: "0400", group: root }
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Auth | Propietario y permisos seguros
+  ansible.builtin.file:
+    path: "{{ item.item.path }}"
+    owner: root
+    group: "{{ item.item.group }}"
+    mode: "{{ item.item.mode }}"
+  loop: "{{ sensibles_stat.results }}"
+  when: item.stat.exists
+  loop_control:
+    label: "{{ item.item.path }} -> {{ item.item.mode }}"
+
+# ── Compiladores solo root (Lynis HRDN-7222) ───────────────────────
+- name: Auth | Buscar compiladores
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: [/usr/bin/as, /usr/bin/cc, /usr/bin/gcc, /usr/bin/g++, /usr/bin/c++]
+  register: compiladores
+
+- name: Auth | Restringir compiladores a root
+  ansible.builtin.file:
+    path: "{{ item.stat.lnk_source | default(item.item) }}"
+    mode: "0750"
+  loop: "{{ compiladores.results }}"
+  when: item.stat.exists
+  loop_control:
+    label: "{{ item.item }}"
+
+# ── journald persistente ───────────────────────────────────────────
+- name: Auth | Directorios del journal
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop: [/var/log/journal, /etc/systemd/journald.conf.d]
+
+- name: Auth | journald persistente, comprimido y con tope
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/50-hardening.conf
+    content: |
+      [Journal]
+      Storage=persistent
+      Compress=yes
+      SystemMaxUse=2G
+      ForwardToSyslog=yes
+    mode: "0644"
+  notify: Reiniciar journald
