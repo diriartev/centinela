@@ -200,11 +200,6 @@ Este proyecto lo diseñé, desplegué y opero yo, y lo desarrollé **trabajando 
 
 Todo lo que está aquí se ejecutó y validó en un servidor físico real.
 
-## 🗺️ Próximos pasos
-
-- [ ] Copia de la línea base de AIDE fuera del servidor (inmutable)
-- [ ] Separar más la red de administración (panel, Kibana y Portainer en redes distintas)
-- [ ] Sensores de red (SSH, SMB, ICS) expuestos mediante un VPS y WireGuard, sin abrir puertos en la red interna
 
 ## ⚠️ Uso responsable
 
